@@ -1,0 +1,25 @@
+.DS_Store
+.build/
+.swift-build-release/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+.swift-build/
+dist/
+
+# Local tooling and machine-specific state
+.codex/
+.commandcode/
+
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.p8
+*.key
+*.keystore
+*.mobileprovision
+Secrets.*
+Config.local.*
