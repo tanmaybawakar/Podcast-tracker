@@ -359,6 +359,37 @@ struct ContractTests {
         #expect(value.actionPlan.count == 1)
     }
 
+    @Test func quirkyTiersUseThreeDistinctModelsAndStrengths() {
+        #expect(Set(QuirkyModel.allCases.map(\.modelID)).count == 3)
+        #expect(QuirkyModel.deep.reasoningEffort == "high")
+        #expect(QuirkyModel.balanced.reasoningEffort == "medium")
+        #expect(QuirkyModel.instant.reasoningEffort == "low")
+    }
+
+    @Test func quirkyPromptGroundsAdviceAndProtectsProjectContext() {
+        let prompt = QuirkyPrompt.system(episodeTitle: "Reddit strategy", transcript: "[1:10] Seven steps")
+        #expect(prompt.contains("transcript as the primary source of truth"))
+        #expect(prompt.contains("never assume which project"))
+        #expect(prompt.contains("action, deliverable, constraint, and success check"))
+        #expect(prompt.contains("[1:10] Seven steps"))
+    }
+
+    @Test func quirkyContextCapsTranscriptAndPrioritizesQuestionMatches() {
+        let filler = String(repeating: "Unrelated transcript line.\n", count: 1_000)
+        let transcript = filler + "[12:30] The launch plan is to validate with ten customers.\n" + filler
+        let excerpt = QuirkyContext.transcriptExcerpt(transcript, for: "What is the launch plan?")
+        #expect(excerpt.count <= QuirkyContext.maximumTranscriptCharacters)
+        #expect(excerpt.contains("validate with ten customers"))
+    }
+
+    @Test func quirkyContextCapsConversationHistory() {
+        let history = (0..<8).map { (role: "user", content: String(repeating: "x", count: 2_000) + "\($0)") }
+        let compact = QuirkyContext.recentHistory(history)
+        #expect(compact.count == QuirkyContext.maximumHistoryMessages)
+        #expect(compact.allSatisfy { ($0["content"]?.count ?? 0) <= QuirkyContext.maximumHistoryCharacters })
+    }
+
+
     @Test func transcriptImporterPreservesTimestampOffsets() {
         let srt = "1\n00:00:05,000 --> 00:00:08,000\nImportant idea\n"
         let value = TranscriptImporter.document(text: srt, format: "srt", podcastID: UUID(), source: .imported)
@@ -366,11 +397,140 @@ struct ContractTests {
         #expect(value.segments.first?.durationSeconds == 3)
     }
 
+    @Test func transcriptAPIResponsePreservesTimestampedSegments() throws {
+        let data = #"{"transcript":[{"text":"First point","start":12.5,"duration":3.25}]}"#.data(using: .utf8)!
+        let response = try JSONDecoder().decode(TranscriptAPIResponse.self, from: data)
+        #expect(response.transcript.first?.text == "First point")
+        #expect(response.transcript.first?.start == 12.5)
+        #expect(response.transcript.first?.duration == 3.25)
+    }
+
     @Test func supabaseDTOUsesCategoryIDWithoutSecrets() throws {
-        let podcast = Podcast(title: "Episode", url: "x", youtubeVideoId: "id", categoryID: "science")
+        let collectionID = UUID()
+        let podcast = Podcast(
+            title: "Episode", url: "x", youtubeVideoId: "id",
+            completedAt: Date(timeIntervalSince1970: 100),
+            scheduledAt: Date(timeIntervalSince1970: 200),
+            collectionIDs: [collectionID], categoryID: "science"
+        )
         let data = try JSONEncoder().encode(PodcastDTO(model: podcast, legacyCategory: "Science"))
         let text = String(decoding: data, as: UTF8.self)
         #expect(text.contains("categoryID"))
+        #expect(text.contains("completedAt"))
+        #expect(text.contains("scheduledAt"))
+        #expect(text.contains(collectionID.uuidString))
         #expect(!text.localizedCaseInsensitiveContains("groq"))
+        #expect(!text.contains("fileName"))
+        #expect(!text.contains("byteCount"))
+        #expect(!text.contains("resolutionHeight"))
+    }
+}
+
+@Suite("Downloads, scheduling, and collections")
+struct LibraryManagementTests {
+    @Test func cloudMergeRetainsTheNewestResumePosition() {
+        let id = UUID()
+        let local = Podcast(
+            id: id, title: "Episode", url: "x", youtubeVideoId: "dQw4w9WgXcQ",
+            lastWatchedDate: Date(timeIntervalSince1970: 200), lastPlaybackPosition: 82
+        )
+        let remote = Podcast(
+            id: id, title: "Episode", url: "x", youtubeVideoId: "dQw4w9WgXcQ",
+            lastWatchedDate: Date(timeIntervalSince1970: 100), lastPlaybackPosition: 31
+        )
+
+        #expect(Podcast.mergedForSync(local: local, remote: remote).lastPlaybackPosition == 82)
+    }
+
+    @Test func cloudMergeUsesNewerRemoteProgress() {
+        let id = UUID()
+        let local = Podcast(
+            id: id, title: "Episode", url: "x", youtubeVideoId: "dQw4w9WgXcQ",
+            lastWatchedDate: Date(timeIntervalSince1970: 100), lastPlaybackPosition: 82
+        )
+        let remote = Podcast(
+            id: id, title: "Episode", url: "x", youtubeVideoId: "dQw4w9WgXcQ",
+            lastWatchedDate: Date(timeIntervalSince1970: 200), lastPlaybackPosition: 143
+        )
+
+        #expect(Podcast.mergedForSync(local: local, remote: remote).lastPlaybackPosition == 143)
+    }
+
+    @Test func oldPodcastPayloadDefaultsNewFieldsSafely() throws {
+        let data = #"{"title":"Legacy","url":"x","youtubeVideoId":"dQw4w9WgXcQ","isCompleted":false}"#.data(using: .utf8)!
+        let podcast = try JSONDecoder().decode(Podcast.self, from: data)
+        #expect(podcast.completedAt == nil)
+        #expect(podcast.scheduledAt == nil)
+        #expect(podcast.collectionIDs.isEmpty)
+    }
+
+    @Test func downloadDefaultsUseEightGBAnd1080p() {
+        let settings = DownloadSettings()
+        #expect(settings.maximumStorageBytes == 8 * 1_024 * 1_024 * 1_024)
+        #expect(settings.quality == .high1080)
+        #expect(DownloadQuality.saver480.formatSelector.contains("height<=480"))
+        #expect(DownloadQuality.standard720.formatSelector.contains("height<=720"))
+        #expect(DownloadQuality.high1080.formatSelector.contains("height<=1080"))
+    }
+
+    @Test func redownloadingACompletedEpisodeIsManuallyRetained() {
+        #expect(LocalMediaStore.retentionForNewDownload(completedAt: nil) == .untilCompleted)
+        #expect(LocalMediaStore.retentionForNewDownload(completedAt: Date()) == .manual)
+    }
+
+    @MainActor
+    @Test func hardCapRejectsANewDownloadBeforeNetworkWork() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "PodTrackioCapTest-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let occupyingFile = root.appending(path: "aaaaaaaaaaa.mp4")
+        _ = FileManager.default.createFile(atPath: occupyingFile.path, contents: Data())
+        let handle = try FileHandle(forWritingTo: occupyingFile)
+        try handle.truncate(atOffset: UInt64(DownloadSettings.storageLimitBytes))
+        try handle.close()
+
+        let store = LocalMediaStore(rootURL: root)
+        do {
+            _ = try await store.download(videoID: "dQw4w9WgXcQ", completedAt: nil)
+            Issue.record("Expected the hard storage cap to reject the download")
+        } catch let error as LocalMediaStore.MediaError {
+            #expect(error == .storageLimitReached)
+        }
+    }
+
+    @Test func scheduledNotificationHasStableIndependentIdentifier() {
+        let id = UUID()
+        let item = ScheduledPodcastNotification(podcastID: id, title: "Episode", fireDate: Date())
+        #expect(item.id == "scheduled.\(id.uuidString)")
+    }
+
+    @Test func collectionKeepsPlaylistOrder() {
+        let collection = PodcastCollection(
+            title: "Course", sourcePlaylistID: "PL123", sourceURL: "https://youtube.com/playlist?list=PL123",
+            videoIDs: ["aaaaaaaaaaa", "bbbbbbbbbbb"]
+        )
+        #expect(collection.videoIDs == ["aaaaaaaaaaa", "bbbbbbbbbbb"])
+    }
+
+    @MainActor
+    @Test func completedDownloadExpiresWithoutTouchingUserStorage() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "PodTrackioCleanupTest-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let videoID = "dQw4w9WgXcQ"
+        let file = root.appending(path: "\(videoID).mp4")
+        try Data(repeating: 1, count: 1_000_001).write(to: file)
+
+        let store = LocalMediaStore(rootURL: root)
+        let completion = Date().addingTimeInterval(-8 * 24 * 60 * 60)
+        let podcast = Podcast(
+            title: "Done", url: "x", youtubeVideoId: videoID,
+            isCompleted: true, completedAt: completion
+        )
+        store.reconcile(with: [podcast])
+        #expect(store.records[videoID] == nil)
+        #expect(!FileManager.default.fileExists(atPath: file.path))
     }
 }

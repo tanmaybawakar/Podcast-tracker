@@ -14,6 +14,9 @@ final class DataManager: @unchecked Sendable {
     private let habitsFileName = "habit_settings.json"
     private let notificationsFileName = "notification_preferences.json"
     private let commitmentsFileName = "focus_commitments.json"
+    private let collectionsFileName = "podcast_collections.json"
+    private let downloadRecordsFileName = "download_records.json"
+    private let downloadSettingsFileName = "download_settings.json"
 
     private var appSupportURL: URL {
         let urls = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)
@@ -42,8 +45,18 @@ final class DataManager: @unchecked Sendable {
     private var habitsURL: URL { appSupportURL.appendingPathComponent(habitsFileName) }
     private var notificationsURL: URL { appSupportURL.appendingPathComponent(notificationsFileName) }
     private var commitmentsURL: URL { appSupportURL.appendingPathComponent(commitmentsFileName) }
+    private var collectionsURL: URL { appSupportURL.appendingPathComponent(collectionsFileName) }
+    private var downloadRecordsURL: URL { appSupportURL.appendingPathComponent(downloadRecordsFileName) }
+    private var downloadSettingsURL: URL { appSupportURL.appendingPathComponent(downloadSettingsFileName) }
     var transcriptCacheURL: URL {
         let url = appSupportURL.appendingPathComponent("Transcripts", isDirectory: true)
+        if !fileManager.fileExists(atPath: url.path) {
+            try? fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+        return url
+    }
+    var mediaCacheURL: URL {
+        let url = appSupportURL.appendingPathComponent("Media", isDirectory: true)
         if !fileManager.fileExists(atPath: url.path) {
             try? fileManager.createDirectory(at: url, withIntermediateDirectories: true)
         }
@@ -168,6 +181,15 @@ final class DataManager: @unchecked Sendable {
     func saveFocusCommitments(_ commitments: [FocusCommitment]) { save(commitments, to: commitmentsURL) }
     func loadFocusCommitments() -> [FocusCommitment] { load([FocusCommitment].self, from: commitmentsURL) ?? [] }
 
+    func saveCollections(_ collections: [PodcastCollection]) { save(collections, to: collectionsURL) }
+    func loadCollections() -> [PodcastCollection] { load([PodcastCollection].self, from: collectionsURL) ?? [] }
+
+    func saveDownloadRecords(_ records: [DownloadRecord]) { save(records, to: downloadRecordsURL) }
+    func loadDownloadRecords() -> [DownloadRecord] { load([DownloadRecord].self, from: downloadRecordsURL) ?? [] }
+
+    func saveDownloadSettings(_ settings: DownloadSettings) { save(settings, to: downloadSettingsURL) }
+    func loadDownloadSettings() -> DownloadSettings { load(DownloadSettings.self, from: downloadSettingsURL) ?? DownloadSettings() }
+
     func saveTranscript(_ transcript: TranscriptDocument) {
         save(transcript, to: transcriptCacheURL.appendingPathComponent("\(transcript.podcastID.uuidString).json"))
     }
@@ -206,5 +228,9 @@ final class DataManager: @unchecked Sendable {
         try? fileManager.removeItem(at: habitsURL)
         try? fileManager.removeItem(at: notificationsURL)
         try? fileManager.removeItem(at: commitmentsURL)
+        try? fileManager.removeItem(at: collectionsURL)
+        try? fileManager.removeItem(at: downloadRecordsURL)
+        try? fileManager.removeItem(at: downloadSettingsURL)
+        try? fileManager.removeItem(at: mediaCacheURL)
     }
 }

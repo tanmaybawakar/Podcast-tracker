@@ -13,6 +13,9 @@ struct Podcast: Identifiable, Codable, Hashable {
     var lastWatchedDate: Date?
     var lastPlaybackPosition: Double = 0 // seconds - for continue watching
     var isCompleted: Bool = false
+    var completedAt: Date?
+    var scheduledAt: Date?
+    var collectionIDs: [UUID] = []
     var categoryID: String = LearningCategory.generalID
     var duration: Double? = nil // total video duration in seconds if known
 
@@ -76,7 +79,7 @@ struct Podcast: Identifiable, Codable, Hashable {
     private enum CodingKeys: String, CodingKey {
         case id, title, url, youtubeVideoId, thumbnailURL, dateAdded, notes
         case totalWatchedSeconds, lastWatchedDate, lastPlaybackPosition
-        case isCompleted, categoryID, category, duration
+        case isCompleted, completedAt, scheduledAt, collectionIDs, categoryID, category, duration
     }
 
     init(
@@ -84,6 +87,7 @@ struct Podcast: Identifiable, Codable, Hashable {
         thumbnailURL: String? = nil, dateAdded: Date = Date(), notes: String = "",
         totalWatchedSeconds: Double = 0, lastWatchedDate: Date? = nil,
         lastPlaybackPosition: Double = 0, isCompleted: Bool = false,
+        completedAt: Date? = nil, scheduledAt: Date? = nil, collectionIDs: [UUID] = [],
         categoryID: String = LearningCategory.generalID, duration: Double? = nil
     ) {
         self.id = id
@@ -97,6 +101,9 @@ struct Podcast: Identifiable, Codable, Hashable {
         self.lastWatchedDate = lastWatchedDate
         self.lastPlaybackPosition = lastPlaybackPosition
         self.isCompleted = isCompleted
+        self.completedAt = completedAt
+        self.scheduledAt = scheduledAt
+        self.collectionIDs = collectionIDs
         self.categoryID = categoryID
         self.duration = duration
     }
@@ -114,6 +121,9 @@ struct Podcast: Identifiable, Codable, Hashable {
         lastWatchedDate = try container.decodeIfPresent(Date.self, forKey: .lastWatchedDate)
         lastPlaybackPosition = try container.decodeIfPresent(Double.self, forKey: .lastPlaybackPosition) ?? 0
         isCompleted = try container.decodeIfPresent(Bool.self, forKey: .isCompleted) ?? false
+        completedAt = try container.decodeIfPresent(Date.self, forKey: .completedAt)
+        scheduledAt = try container.decodeIfPresent(Date.self, forKey: .scheduledAt)
+        collectionIDs = try container.decodeIfPresent([UUID].self, forKey: .collectionIDs) ?? []
         duration = try container.decodeIfPresent(Double.self, forKey: .duration)
 
         if let storedID = try container.decodeIfPresent(String.self, forKey: .categoryID), !storedID.isEmpty {
@@ -138,7 +148,19 @@ struct Podcast: Identifiable, Codable, Hashable {
         try container.encodeIfPresent(lastWatchedDate, forKey: .lastWatchedDate)
         try container.encode(lastPlaybackPosition, forKey: .lastPlaybackPosition)
         try container.encode(isCompleted, forKey: .isCompleted)
+        try container.encodeIfPresent(completedAt, forKey: .completedAt)
+        try container.encodeIfPresent(scheduledAt, forKey: .scheduledAt)
+        try container.encode(collectionIDs, forKey: .collectionIDs)
         try container.encode(categoryID, forKey: .categoryID)
         try container.encodeIfPresent(duration, forKey: .duration)
+    }
+
+    /// Resolves one logical episode received from two devices. Playback time
+    /// is already part of the deployed podcast contract, so it provides a
+    /// durable ordering without requiring a new cloud column.
+    static func mergedForSync(local: Podcast, remote: Podcast) -> Podcast {
+        let localTimestamp = local.lastWatchedDate ?? local.dateAdded
+        let remoteTimestamp = remote.lastWatchedDate ?? remote.dateAdded
+        return remoteTimestamp > localTimestamp ? remote : local
     }
 }

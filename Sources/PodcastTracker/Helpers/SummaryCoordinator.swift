@@ -5,6 +5,7 @@ import YouTubeTranscript
 
 enum SummaryGenerationState: Equatable {
     case idle
+    case fetchingTranscript
     case fetchingCaptions
     case needsAudioConsent
     case downloadingAudio(progress: Double)
@@ -50,23 +51,29 @@ final class SummaryCoordinator {
             let transcript: TranscriptDocument
             if let importedTranscript {
                 transcript = importedTranscript
-            } else if let cached = DataManager.shared.loadTranscript(for: podcast.id) {
+            } else if let cached = DataManager.shared.loadTranscript(for: podcast.id),
+                      [.transcriptAPI, .imported, .pasted].contains(cached.source) {
                 transcript = cached
             } else {
-                progress(.fetchingCaptions)
+                progress(.fetchingTranscript)
                 do {
-                    transcript = try await fetchCaptions(for: podcast)
+                    transcript = try await fetchTranscript(for: podcast)
                 } catch {
-                    guard allowAudioTranscription else { throw SummaryPipelineError.audioConsentRequired }
+                    progress(.fetchingCaptions)
                     do {
-                        transcript = try await transcribeAudio(for: podcast, apiKey: key, progress: progress)
-                    } catch is CancellationError { throw CancellationError() }
-                    catch { throw SummaryPipelineError.transcriptImportRequired(error.localizedDescription) }
+                        transcript = try await fetchCaptions(for: podcast)
+                    } catch {
+                        guard allowAudioTranscription else { throw SummaryPipelineError.audioConsentRequired }
+                        do {
+                            transcript = try await transcribeAudio(for: podcast, apiKey: key, progress: progress)
+                        } catch is CancellationError { throw CancellationError() }
+                        catch { throw SummaryPipelineError.transcriptImportRequired(error.localizedDescription) }
+                    }
                 }
-                DataManager.shared.saveTranscript(transcript)
             }
             try Task.checkCancellation()
             guard !transcript.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw SummaryPipelineError.emptyTranscript }
+            DataManager.shared.saveTranscript(transcript)
             progress(.synthesizing)
             let payload = try await summarizeLongTranscript(transcript.text, title: podcast.title, apiKey: key)
             return PodcastSummary(
@@ -75,12 +82,26 @@ final class SummaryCoordinator {
                 keyTopics: payload.keyTopics.map { .init(title: $0.title, explanation: $0.explanation, timestampSeconds: $0.timestampSeconds) },
                 majorTakeaways: payload.majorTakeaways.map { .init(title: $0.title, explanation: $0.explanation) },
                 actionPlan: payload.actionPlan.map { .init(title: $0.title, detail: $0.detail) },
+                sections: (payload.sections ?? []).map { section in
+                    .init(title: section.title, introduction: section.introduction, points: section.points.map { .init(title: $0.title, explanation: $0.explanation, timestampSeconds: $0.timestampSeconds) })
+                },
                 generatedAt: Date(), transcriptSource: transcript.source, model: "openai/gpt-oss-120b"
             )
         }
         generationTask = task
         defer { generationTask = nil }
         return try await task.value
+    }
+
+    private func fetchTranscript(for podcast: Podcast) async throws -> TranscriptDocument {
+        guard let apiKey = KeychainStore.transcriptAPIKey() else { throw TranscriptAPIError.missingKey }
+        let segments = try await TranscriptAPIClient.shared.fetchTranscript(videoID: podcast.youtubeVideoId, apiKey: apiKey)
+        return TranscriptDocument(
+            podcastID: podcast.id,
+            source: .transcriptAPI,
+            text: segments.map(\.text).joined(separator: "\n"),
+            segments: segments
+        )
     }
 
     private func fetchCaptions(for podcast: Podcast) async throws -> TranscriptDocument {

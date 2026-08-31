@@ -4,6 +4,7 @@ import SwiftUI
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var primaryWindowController: NSWindowController?
+    private var requestedInitialWindow = false
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         Task { @MainActor in NotificationManager.shared.registerBeforeLaunchCompletes() }
@@ -11,7 +12,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
-        showPrimaryWindow()
+        requestInitialWindowIfNeeded()
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        requestInitialWindowIfNeeded()
+        AppViewModel.shared.refreshCloudData()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -32,6 +38,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func showPrimaryWindow() {
         if let window = primaryWindowController?.window {
+            window.collectionBehavior.insert(.moveToActiveSpace)
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        if let window = NSApp.windows.first(where: { $0.title == "PodTrackio" }) {
+            window.collectionBehavior.insert(.moveToActiveSpace)
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -52,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.minSize = NSSize(width: 860, height: 620)
         window.contentViewController = hostingController
         window.isReleasedWhenClosed = false
+        window.collectionBehavior.insert(.moveToActiveSpace)
         window.setFrameAutosaveName("PodTrackioMainWindow")
         window.center()
 
@@ -59,6 +73,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         primaryWindowController = controller
         controller.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func requestInitialWindowIfNeeded() {
+        guard !requestedInitialWindow else { return }
+        requestedInitialWindow = true
+        DispatchQueue.main.async { [weak self] in
+            self?.showPrimaryWindow()
+        }
     }
 }
 
@@ -83,7 +105,9 @@ struct PodcastTrackerApp: App {
         }
         .menuBarExtraStyle(.menu)
         .commands {
-            CommandGroup(after: .newItem) {
+            // The main window is owned by AppDelegate. Replacing the standard
+            // New Window command prevents SwiftUI from creating a second copy.
+            CommandGroup(replacing: .newItem) {
                 Button("Add Episode…") {
                     appDelegate.showPrimaryWindow()
                     viewModel.showAddPodcast = true

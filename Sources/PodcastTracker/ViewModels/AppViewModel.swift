@@ -20,6 +20,7 @@ enum AppSection: String, CaseIterable, Identifiable {
 enum PlayerInspectorMode: String, CaseIterable, Identifiable {
     case summary = "Summary"
     case notes = "Notes"
+    case chat = "Chat"
     var id: String { rawValue }
 }
 
@@ -33,13 +34,16 @@ final class AppViewModel: ObservableObject {
     @Published var categories: [LearningCategory] = []
     @Published var activities: [DailyLearningActivity] = []
     @Published var summaries: [PodcastSummary] = []
+    @Published private(set) var quirkyConversations: [UUID: [QuirkyChatMessage]] = [:]
     @Published var habitSettings = HabitSettings()
     @Published var notificationPreferences = NotificationPreferences()
     @Published var focusCommitments: [FocusCommitment] = []
+    @Published var collections: [PodcastCollection] = []
 
     @Published var selectedSection: AppSection = .today
     @Published var selectedPodcast: Podcast?
     @Published var selectedCategoryID: String?
+    @Published var selectedCollectionID: UUID?
     @Published var selectedCalendarDate = Date()
     @Published var inspectorMode: PlayerInspectorMode = .summary
     @Published var inspectorPresented = true
@@ -60,6 +64,9 @@ final class AppViewModel: ObservableObject {
     private let dataManager = DataManager.shared
     private var trackingTimer: Timer?
     private var saveTimer: Timer?
+    private var downloadCleanupTimer: Timer?
+    private var progressSyncTasks: [UUID: Task<Void, Never>] = [:]
+    private var syncInFlight = false
     private var previousLevel = 1
     private var cancellables = Set<AnyCancellable>()
 
@@ -112,13 +119,27 @@ final class AppViewModel: ObservableObject {
     }
 
     var filteredPodcasts: [Podcast] {
-        podcasts.filter { podcast in
+        let matches = podcasts.filter { podcast in
             let categoryName = category(for: podcast.categoryID)?.name ?? ""
+            let collectionNames = collections
+                .filter { podcast.collectionIDs.contains($0.id) }
+                .map(\.title)
+                .joined(separator: " ")
             let matchesSearch = searchText.isEmpty || podcast.title.localizedCaseInsensitiveContains(searchText)
                 || categoryName.localizedCaseInsensitiveContains(searchText)
+                || collectionNames.localizedCaseInsensitiveContains(searchText)
             let matchesCategory = selectedCategoryID == nil || podcast.categoryID == selectedCategoryID
-            return matchesSearch && matchesCategory
-        }.sorted { $0.dateAdded > $1.dateAdded }
+            let matchesCollection = selectedCollectionID == nil || podcast.collectionIDs.contains(selectedCollectionID!)
+            return matchesSearch && matchesCategory && matchesCollection
+        }
+        guard let selectedCollectionID,
+              let collection = collections.first(where: { $0.id == selectedCollectionID }) else {
+            return matches.sorted { $0.dateAdded > $1.dateAdded }
+        }
+        let positions = Dictionary(uniqueKeysWithValues: collection.videoIDs.enumerated().map { ($0.element, $0.offset) })
+        return matches.sorted {
+            (positions[$0.youtubeVideoId] ?? .max) < (positions[$1.youtubeVideoId] ?? .max)
+        }
     }
 
     var categoriesUsed: Set<String> {
@@ -128,6 +149,7 @@ final class AppViewModel: ObservableObject {
     init() {
         loadData()
         startAutoSave()
+        startDownloadCleanup()
         setupAuthObserver()
         setupNotificationRoutes()
     }
@@ -142,6 +164,13 @@ final class AppViewModel: ObservableObject {
         habitSettings = dataManager.loadHabitSettings()
         notificationPreferences = dataManager.loadNotificationPreferences()
         focusCommitments = dataManager.loadFocusCommitments()
+        collections = dataManager.loadCollections()
+
+        let migrationDate = Date()
+        for index in podcasts.indices where podcasts[index].isCompleted && podcasts[index].completedAt == nil {
+            podcasts[index].completedAt = migrationDate
+        }
+        LocalMediaStore.shared.reconcile(with: podcasts, migrationDate: migrationDate)
 
         seedMissingCategoriesAndRepairReferences()
         LearningCalendar.evaluateBuildUp(settings: &habitSettings, activities: activities, now: Date())
@@ -152,9 +181,7 @@ final class AppViewModel: ObservableObject {
         saveLocalData()
         rescheduleNotifications()
 
-        if AuthManager.shared.isAuthenticated {
-            Task { await syncWithSupabase() }
-        }
+        refreshCloudData()
     }
 
     func saveData() {
@@ -165,6 +192,7 @@ final class AppViewModel: ObservableObject {
         let currentCategories = categories
         let currentActivities = activities
         let currentSummaries = summaries
+        let currentCollections = collections
         Task {
             do {
                 try await SupabaseClient.shared.upsertStats(currentStats)
@@ -172,6 +200,7 @@ final class AppViewModel: ObservableObject {
                 try await SupabaseClient.shared.upsertCategories(currentCategories)
                 try await SupabaseClient.shared.upsertActivities(currentActivities)
                 try await SupabaseClient.shared.upsertSummaries(currentSummaries)
+                try await SupabaseClient.shared.upsertCollections(currentCollections)
             } catch {
                 print("Cloud sync deferred: \(error.localizedDescription)")
             }
@@ -188,33 +217,36 @@ final class AppViewModel: ObservableObject {
         dataManager.saveHabitSettings(habitSettings)
         dataManager.saveNotificationPreferences(notificationPreferences)
         dataManager.saveFocusCommitments(focusCommitments)
+        dataManager.saveCollections(collections)
+    }
+
+    /// Pulls the latest cloud state whenever the app opens or becomes active.
+    /// Local playback is merged by edit time before any upload, so a slow
+    /// response cannot erase the position the person just reached.
+    func refreshCloudData() {
+        guard AuthManager.shared.isAuthenticated, !syncInFlight else { return }
+        Task { await syncWithSupabase() }
     }
 
     private func syncWithSupabase() async {
+        guard !syncInFlight else { return }
+        syncInFlight = true
+        defer { syncInFlight = false }
         do {
             async let remotePodcasts = SupabaseClient.shared.fetchPodcasts()
             async let remoteStats = SupabaseClient.shared.fetchStats()
             async let remoteCategories = SupabaseClient.shared.fetchCategories()
             async let remoteActivities = SupabaseClient.shared.fetchActivities()
             async let remoteSummaries = SupabaseClient.shared.fetchSummaries()
-            let result = try await (remotePodcasts, remoteStats, remoteCategories, remoteActivities, remoteSummaries)
+            async let remoteCollections = SupabaseClient.shared.fetchCollections()
+            let result = try await (remotePodcasts, remoteStats, remoteCategories, remoteActivities, remoteSummaries, remoteCollections)
 
-            if !result.0.isEmpty {
-                // Merge remote podcasts with any local podcasts not yet on remote
-                let remoteIDs = Set(result.0.map(\.id))
-                var merged = result.0
-                for local in podcasts where !remoteIDs.contains(local.id) {
-                    merged.append(local)
-                }
-                podcasts = merged
-            } else if !podcasts.isEmpty {
-                // Remote has no podcasts yet, push local podcasts up
-                try? await SupabaseClient.shared.upsertPodcasts(podcasts, categories: categories)
-            }
+            podcasts = mergePodcasts(local: podcasts, remote: result.0)
             if let value = result.1 { stats = value }
             if !result.2.isEmpty { categories = mergeByUpdatedAt(local: categories, remote: result.2) }
             if !result.3.isEmpty { activities = mergeByID(local: activities, remote: result.3) }
             if !result.4.isEmpty { summaries = mergeSummaries(local: summaries, remote: result.4) }
+            if !result.5.isEmpty { collections = mergeCollections(local: collections, remote: result.5) }
             seedMissingCategoriesAndRepairReferences()
             restoreAchievementUnlocks()
             saveLocalData()
@@ -223,6 +255,7 @@ final class AppViewModel: ObservableObject {
             if AuthManager.shared.isAuthenticated {
                 try? await SupabaseClient.shared.upsertPodcasts(podcasts, categories: categories)
                 try? await SupabaseClient.shared.upsertStats(stats)
+                try? await SupabaseClient.shared.upsertCollections(collections)
             }
         } catch {
             print("Cloud sync unavailable; using the local learning workspace: \(error.localizedDescription)")
@@ -230,14 +263,21 @@ final class AppViewModel: ObservableObject {
     }
 
     func category(for id: String) -> LearningCategory? { categories.first { $0.id == id } }
+    func collection(for id: UUID) -> PodcastCollection? { collections.first { $0.id == id } }
     func summary(for podcastID: UUID) -> PodcastSummary? { summaries.first { $0.podcastID == podcastID } }
     func activity(for date: Date) -> DailyLearningActivity? {
         let key = LearningCalendar.dateKey(for: date)
         return activities.first { $0.dateKey == key }
     }
 
+    func scheduledPodcasts(on date: Date) -> [Podcast] {
+        podcasts.filter { podcast in podcast.scheduledAt.map { Calendar.current.isDate($0, inSameDayAs: date) } == true }
+            .sorted { ($0.scheduledAt ?? .distantFuture) < ($1.scheduledAt ?? .distantFuture) }
+    }
+
     func addPodcast(title: String, url: String, categoryID: String) {
         guard let videoID = Podcast.extractVideoId(from: url), category(for: categoryID) != nil else { return }
+        guard !podcasts.contains(where: { $0.youtubeVideoId == videoID }) else { return }
         podcasts.append(Podcast(
             title: title.trimmingCharacters(in: .whitespacesAndNewlines), url: url,
             youtubeVideoId: videoID,
@@ -250,10 +290,72 @@ final class AppViewModel: ObservableObject {
         rescheduleNotifications()
     }
 
+    func importPlaylist(_ preview: PlaylistPreview, categoryID: String) -> PlaylistImportResult {
+        guard category(for: categoryID) != nil else {
+            return .init(added: 0, reused: 0, skipped: preview.episodes.count + preview.unavailableCount)
+        }
+        let collection: PodcastCollection
+        if let existing = collections.first(where: { $0.sourcePlaylistID == preview.playlistID }) {
+            collection = existing
+            if let index = collections.firstIndex(where: { $0.id == existing.id }) {
+                collections[index].title = preview.title
+                collections[index].sourceURL = preview.sourceURL
+                let latest = preview.episodes.sorted(by: { $0.playlistIndex < $1.playlistIndex }).map(\.videoID)
+                collections[index].videoIDs = latest + existing.videoIDs.filter { !latest.contains($0) }
+            }
+        } else {
+            collection = PodcastCollection(
+                title: preview.title,
+                sourcePlaylistID: preview.playlistID,
+                sourceURL: preview.sourceURL,
+                sortOrder: collections.count,
+                videoIDs: preview.episodes.sorted(by: { $0.playlistIndex < $1.playlistIndex }).map(\.videoID)
+            )
+            collections.append(collection)
+        }
+
+        var added = 0
+        var reused = 0
+        for episode in preview.episodes.sorted(by: { $0.playlistIndex < $1.playlistIndex }) {
+            if let index = podcasts.firstIndex(where: { $0.youtubeVideoId == episode.videoID }) {
+                if !podcasts[index].collectionIDs.contains(collection.id) {
+                    podcasts[index].collectionIDs.append(collection.id)
+                }
+                reused += 1
+            } else {
+                podcasts.append(Podcast(
+                    title: episode.title,
+                    url: episode.url,
+                    youtubeVideoId: episode.videoID,
+                    thumbnailURL: episode.thumbnailURL,
+                    collectionIDs: [collection.id],
+                    categoryID: categoryID
+                ))
+                added += 1
+            }
+        }
+        stats.totalPodcastsAdded += added
+        checkAchievements()
+        saveData()
+        rescheduleNotifications()
+        return .init(added: added, reused: reused, skipped: preview.unavailableCount)
+    }
+
+    func deleteCollection(_ collection: PodcastCollection) {
+        collections.removeAll { $0.id == collection.id }
+        for index in podcasts.indices { podcasts[index].collectionIDs.removeAll { $0 == collection.id } }
+        if selectedCollectionID == collection.id { selectedCollectionID = nil }
+        saveData()
+        Task { try? await SupabaseClient.shared.deleteCollection(id: collection.id) }
+    }
+
     func removePodcast(_ podcast: Podcast) {
         podcasts.removeAll { $0.id == podcast.id }
         summaries.removeAll { $0.podcastID == podcast.id }
         if selectedPodcast?.id == podcast.id { stopTracking(); selectedPodcast = nil }
+        if !podcasts.contains(where: { $0.youtubeVideoId == podcast.youtubeVideoId }) {
+            LocalMediaStore.shared.deleteDownload(videoID: podcast.youtubeVideoId)
+        }
         saveData()
         Task { try? await SupabaseClient.shared.deletePodcast(id: podcast.id) }
     }
@@ -280,7 +382,11 @@ final class AppViewModel: ObservableObject {
 
     func markCompleted(_ podcast: Podcast) {
         guard let index = podcasts.firstIndex(where: { $0.id == podcast.id }), !podcasts[index].isCompleted else { return }
+        let completedAt = Date()
         podcasts[index].isCompleted = true
+        podcasts[index].completedAt = completedAt
+        podcasts[index].scheduledAt = nil
+        LocalMediaStore.shared.markCompleted(videoID: podcasts[index].youtubeVideoId, completedAt: completedAt)
         stats.podcastsCompleted += 1
         awardXP(20, activityDate: Date())
         mutateTodayActivity { $0.completedPodcastIDs.insert(podcast.id) }
@@ -288,6 +394,34 @@ final class AppViewModel: ObservableObject {
         checkAchievements()
         saveData()
         rescheduleNotifications()
+    }
+
+    func schedulePodcast(_ podcast: Podcast, at date: Date) {
+        guard let index = podcasts.firstIndex(where: { $0.id == podcast.id }) else { return }
+        podcasts[index].scheduledAt = date
+        refreshSelectedPodcast()
+        saveData()
+        rescheduleNotifications()
+    }
+
+    func removeSchedule(for podcast: Podcast) {
+        guard let index = podcasts.firstIndex(where: { $0.id == podcast.id }) else { return }
+        podcasts[index].scheduledAt = nil
+        refreshSelectedPodcast()
+        saveData()
+        rescheduleNotifications()
+    }
+
+    func download(_ podcast: Podcast) async throws -> URL {
+        try await LocalMediaStore.shared.download(videoID: podcast.youtubeVideoId, completedAt: podcast.completedAt)
+    }
+
+    func cancelDownload(_ podcast: Podcast) {
+        LocalMediaStore.shared.cancel(videoID: podcast.youtubeVideoId)
+    }
+
+    func deleteDownload(_ podcast: Podcast) {
+        LocalMediaStore.shared.deleteDownload(videoID: podcast.youtubeVideoId)
     }
 
     /// Arms a deliberate learning block. Time starts only after the embedded player reports playback.
@@ -428,7 +562,10 @@ final class AppViewModel: ObservableObject {
     func updatePlaybackPosition(for podcastID: UUID, position: Double) {
         guard let index = podcasts.firstIndex(where: { $0.id == podcastID }) else { return }
         podcasts[index].lastPlaybackPosition = position
-        podcasts[index].lastWatchedDate = Date()
+        let now = Date()
+        podcasts[index].lastWatchedDate = now
+        dataManager.savePodcasts(podcasts)
+        scheduleProgressSync(for: podcasts[index])
         refreshSelectedPodcast()
     }
 
@@ -497,6 +634,28 @@ final class AppViewModel: ObservableObject {
         saveData()
     }
 
+    func askTranscriptQuestion(for podcast: Podcast, question: String, history: [(role: String, content: String)], model: QuirkyModel) async throws -> String {
+        guard let key = KeychainStore.groqAPIKey() else { throw GroqError.missingKey }
+        guard let document = DataManager.shared.loadTranscript(for: podcast.id), !document.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw GroqError.server("Generate the summary first so PodTrackio has a transcript to chat about.")
+        }
+        let context = document.segments.isEmpty ? document.text : document.segments.map {
+            let total = Int($0.startSeconds); let stamp = String(format: "%d:%02d", total / 60, total % 60)
+            return "[\(stamp)] \($0.text)"
+        }.joined(separator: "\n")
+        return try await GroqClient.shared.chat(transcript: context, title: podcast.title, question: question, history: history, model: model, apiKey: key)
+    }
+
+    func quirkyMessages(for podcastID: UUID) -> [QuirkyChatMessage] { quirkyConversations[podcastID] ?? [] }
+
+    func appendQuirkyMessage(_ message: QuirkyChatMessage, podcastID: UUID) {
+        quirkyConversations[podcastID, default: []].append(message)
+    }
+
+    func clearQuirkyConversation(for podcastID: UUID) {
+        quirkyConversations[podcastID] = []
+    }
+
     func generateSummary(for podcast: Podcast, transcript: TranscriptDocument? = nil, allowAudioTranscription: Bool = false) {
         guard summaryState.isIdle else { return }
         Task { [self] in
@@ -529,7 +688,14 @@ final class AppViewModel: ObservableObject {
             distractionCue: preferredDistractionCue,
             distractionPattern: learnedDistractionPattern
         )
-        Task { await NotificationManager.shared.replaceLearningReminders(with: plan) }
+        let scheduled = podcasts.compactMap { podcast -> ScheduledPodcastNotification? in
+            guard let date = podcast.scheduledAt, date > Date(), !podcast.isCompleted else { return nil }
+            return .init(podcastID: podcast.id, title: podcast.title, fireDate: date)
+        }
+        Task {
+            await NotificationManager.shared.replaceLearningReminders(with: plan)
+            await NotificationManager.shared.replaceScheduledPodcastReminders(with: scheduled)
+        }
     }
 
     private func mutateTodayActivity(_ mutation: (inout DailyLearningActivity) -> Void) {
@@ -647,9 +813,50 @@ final class AppViewModel: ObservableObject {
         return Array(values.values)
     }
 
+    private func mergeCollections(local: [PodcastCollection], remote: [PodcastCollection]) -> [PodcastCollection] {
+        var values = Dictionary(uniqueKeysWithValues: local.map { ($0.id, $0) })
+        for item in remote { values[item.id] = item }
+        return values.values.sorted { $0.sortOrder < $1.sortOrder }
+    }
+
+    private func mergePodcasts(local: [Podcast], remote: [Podcast]) -> [Podcast] {
+        var values = Dictionary(uniqueKeysWithValues: local.map { ($0.id, $0) })
+        for remotePodcast in remote {
+            if let localPodcast = values[remotePodcast.id] {
+                values[remotePodcast.id] = Podcast.mergedForSync(local: localPodcast, remote: remotePodcast)
+            } else {
+                values[remotePodcast.id] = remotePodcast
+            }
+        }
+        return values.values.sorted { $0.dateAdded > $1.dateAdded }
+    }
+
+    private func scheduleProgressSync(for podcast: Podcast) {
+        progressSyncTasks[podcast.id]?.cancel()
+        let categoriesSnapshot = categories
+        progressSyncTasks[podcast.id] = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(4))
+                guard !Task.isCancelled, AuthManager.shared.isAuthenticated else { return }
+                try await SupabaseClient.shared.upsertPodcasts([podcast], categories: categoriesSnapshot)
+            } catch is CancellationError {
+                return
+            } catch {
+                print("Progress sync deferred: \(error.localizedDescription)")
+            }
+            await MainActor.run { self?.progressSyncTasks[podcast.id] = nil }
+        }
+    }
+
     private func startAutoSave() {
         saveTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.saveData() }
+        }
+    }
+
+    private func startDownloadCleanup() {
+        downloadCleanupTimer = Timer.scheduledTimer(withTimeInterval: 24 * 60 * 60, repeats: true) { _ in
+            Task { @MainActor in LocalMediaStore.shared.cleanupExpired() }
         }
     }
 
@@ -681,7 +888,12 @@ final class AppViewModel: ObservableObject {
         }.store(in: &cancellables)
     }
 
-    isolated deinit { trackingTimer?.invalidate(); saveTimer?.invalidate() }
+    isolated deinit {
+        trackingTimer?.invalidate()
+        saveTimer?.invalidate()
+        downloadCleanupTimer?.invalidate()
+        progressSyncTasks.values.forEach { $0.cancel() }
+    }
 }
 
 extension SummaryGenerationState {

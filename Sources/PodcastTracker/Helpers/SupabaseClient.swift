@@ -154,6 +154,40 @@ final class SupabaseClient: @unchecked Sendable {
         _ = try await sendRequest(url: components.url!, method: "DELETE")
     }
 
+    // MARK: - Collections API
+
+    func fetchCollections() async throws -> [PodcastCollection] {
+        let userId = await getUserId()
+        let url = supabaseURL.appendingPathComponent("rest/v1/podcast_collections")
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: true)!
+        components.queryItems = [
+            URLQueryItem(name: "select", value: "*"),
+            URLQueryItem(name: "user_id", value: "eq.\(userId)")
+        ]
+        let data = try await sendRequest(url: components.url!, method: "GET")
+        return try decoder.decode([CollectionDTO].self, from: data).map(\.model)
+    }
+
+    func upsertCollections(_ collections: [PodcastCollection]) async throws {
+        guard !collections.isEmpty else { return }
+        let url = supabaseURL.appendingPathComponent("rest/v1/podcast_collections")
+        let encoded = try encoder.encode(collections.map(CollectionDTO.init))
+        let data = try await addUserIdToArray(encoded)
+        _ = try await sendRequest(
+            url: url,
+            method: "POST",
+            body: data,
+            customHeaders: ["Prefer": "resolution=merge-duplicates"]
+        )
+    }
+
+    func deleteCollection(id: UUID) async throws {
+        let url = supabaseURL.appendingPathComponent("rest/v1/podcast_collections")
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: true)!
+        components.queryItems = [URLQueryItem(name: "id", value: "eq.\(id.uuidString)")]
+        _ = try await sendRequest(url: components.url!, method: "DELETE")
+    }
+
     // MARK: - User Stats API
 
     func fetchStats() async throws -> UserStats? {
@@ -250,6 +284,9 @@ struct PodcastDTO: Codable {
     var lastWatchedDate: Date?
     var lastPlaybackPosition: Double
     var isCompleted: Bool
+    var completedAt: Date?
+    var scheduledAt: Date?
+    var collectionIDs: [UUID]?
     var categoryID: String?
     var category: String?
     var duration: Double?
@@ -259,6 +296,7 @@ struct PodcastDTO: Codable {
         thumbnailURL = model.thumbnailURL; dateAdded = model.dateAdded; notes = model.notes
         totalWatchedSeconds = model.totalWatchedSeconds; lastWatchedDate = model.lastWatchedDate
         lastPlaybackPosition = model.lastPlaybackPosition; isCompleted = model.isCompleted
+        completedAt = model.completedAt; scheduledAt = model.scheduledAt; collectionIDs = model.collectionIDs
         categoryID = model.categoryID; category = legacyCategory; duration = model.duration
     }
 
@@ -266,7 +304,33 @@ struct PodcastDTO: Codable {
         Podcast(id: id, title: title, url: url, youtubeVideoId: youtubeVideoId, thumbnailURL: thumbnailURL,
                 dateAdded: dateAdded, notes: notes, totalWatchedSeconds: totalWatchedSeconds,
                 lastWatchedDate: lastWatchedDate, lastPlaybackPosition: lastPlaybackPosition,
-                isCompleted: isCompleted, categoryID: categoryID ?? LearningCategory.stableID(forLegacyName: category ?? "General"), duration: duration)
+                isCompleted: isCompleted, completedAt: completedAt, scheduledAt: scheduledAt,
+                collectionIDs: collectionIDs ?? [],
+                categoryID: categoryID ?? LearningCategory.stableID(forLegacyName: category ?? "General"), duration: duration)
+    }
+}
+
+struct CollectionDTO: Codable {
+    var id: UUID
+    var title: String
+    var sourcePlaylistID: String
+    var sourceURL: String
+    var dateAdded: Date
+    var sortOrder: Int
+    var videoIDs: [String]
+
+    init(_ model: PodcastCollection) {
+        id = model.id
+        title = model.title
+        sourcePlaylistID = model.sourcePlaylistID
+        sourceURL = model.sourceURL
+        dateAdded = model.dateAdded
+        sortOrder = model.sortOrder
+        videoIDs = model.videoIDs
+    }
+
+    var model: PodcastCollection {
+        .init(id: id, title: title, sourcePlaylistID: sourcePlaylistID, sourceURL: sourceURL, dateAdded: dateAdded, sortOrder: sortOrder, videoIDs: videoIDs)
     }
 }
 
@@ -324,12 +388,13 @@ struct ActivityDTO: Codable {
 struct SummaryDTO: Codable {
     var podcastID: UUID; var brief: String; var keyTopics: [PodcastSummary.Topic]
     var majorTakeaways: [PodcastSummary.Takeaway]; var actionPlan: [PodcastSummary.ActionStep]
+    var dynamicSections: [PodcastSummary.Section]?
     var generatedAt: Date; var transcriptSource: TranscriptSource; var modelName: String; var actionPlanXPGranted: Bool
-    enum CodingKeys: String, CodingKey { case podcastID, brief, keyTopics, majorTakeaways, actionPlan, generatedAt, transcriptSource; case modelName = "model"; case actionPlanXPGranted }
+    enum CodingKeys: String, CodingKey { case podcastID, brief, keyTopics, majorTakeaways, actionPlan; case dynamicSections = "dynamic_sections"; case generatedAt, transcriptSource; case modelName = "model"; case actionPlanXPGranted }
     init(_ value: PodcastSummary) {
         podcastID = value.podcastID; brief = value.brief; keyTopics = value.keyTopics
-        majorTakeaways = value.majorTakeaways; actionPlan = value.actionPlan; generatedAt = value.generatedAt
+        majorTakeaways = value.majorTakeaways; actionPlan = value.actionPlan; dynamicSections = value.sections; generatedAt = value.generatedAt
         transcriptSource = value.transcriptSource; modelName = value.model; actionPlanXPGranted = value.actionPlanXPGranted
     }
-    var summary: PodcastSummary { .init(podcastID: podcastID, brief: brief, keyTopics: keyTopics, majorTakeaways: majorTakeaways, actionPlan: actionPlan, generatedAt: generatedAt, transcriptSource: transcriptSource, model: modelName, actionPlanXPGranted: actionPlanXPGranted) }
+    var summary: PodcastSummary { .init(podcastID: podcastID, brief: brief, keyTopics: keyTopics, majorTakeaways: majorTakeaways, actionPlan: actionPlan, sections: dynamicSections ?? [], generatedAt: generatedAt, transcriptSource: transcriptSource, model: modelName, actionPlanXPGranted: actionPlanXPGranted) }
 }

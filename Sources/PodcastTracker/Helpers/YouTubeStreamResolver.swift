@@ -2,6 +2,11 @@ import AVFoundation
 import Foundation
 import YouTubeKit
 
+enum NativePlaybackSource: Hashable {
+    case local
+    case stream
+}
+
 enum YouTubeStreamResolver {
     enum ResolverError: LocalizedError {
         case noPlayableStream
@@ -26,10 +31,13 @@ enum YouTubeStreamResolver {
         let argumentPrefix: [String]
     }
 
-    /// Resolves a directly playable item for native AVKit playback.
-    /// Preference order favors reliable playback: a muxed progressive MP4,
-    /// then adaptive H.264 video + m4a audio, then the HLS manifest.
-    static func playableItem(videoId: String) async throws -> AVPlayerItem {
+    static func playableItem(videoId: String, source: NativePlaybackSource) async throws -> AVPlayerItem {
+        if source == .local {
+            guard let url = await LocalMediaStore.shared.cachedPlayableURL(videoId: videoId) else {
+                throw ResolverError.assetNotReady
+            }
+            return AVPlayerItem(url: url)
+        }
         if let url = try? await ytDLPStreamURL(videoId: videoId) {
             return AVPlayerItem(url: url)
         }
@@ -69,13 +77,18 @@ enum YouTubeStreamResolver {
             let standardOutput = Pipe()
             let standardError = Pipe()
             process.executableURL = invocation.executableURL
-            process.arguments = invocation.argumentPrefix + [
+            var arguments = invocation.argumentPrefix + [
                 "--no-warnings",
                 "--no-playlist",
-                "--format", "best[ext=mp4][vcodec^=avc1]/best[ext=mp4]/best",
+                "--extractor-args", "youtube:player_client=web_embedded",
+                "--format", "18/best[height<=480][ext=mp4]",
                 "--get-url",
                 "https://www.youtube.com/watch?v=\(videoId)"
             ]
+            if let runtimeArguments = javaScriptRuntimeArguments() {
+                arguments.insert(contentsOf: runtimeArguments, at: invocation.argumentPrefix.count)
+            }
+            process.arguments = arguments
             process.standardOutput = standardOutput
             process.standardError = standardError
 
@@ -139,6 +152,19 @@ enum YouTubeStreamResolver {
             executableURL: URL(fileURLWithPath: pythonPath),
             argumentPrefix: [localYTDLP.path]
         )
+    }
+
+    private static func javaScriptRuntimeArguments() -> [String]? {
+        let fileManager = FileManager.default
+        for path in ["/opt/homebrew/bin/deno", "/usr/local/bin/deno", "/opt/local/bin/deno"]
+        where fileManager.isExecutableFile(atPath: path) {
+            return ["--js-runtimes", "deno:\(path)"]
+        }
+        for path in ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/opt/local/bin/node"]
+        where fileManager.isExecutableFile(atPath: path) {
+            return ["--js-runtimes", "node:\(path)"]
+        }
+        return nil
     }
 
     private static func adaptiveCompositionItem(from formats: [any AdaptiveDownloadFormat]) async throws -> AVPlayerItem {

@@ -14,6 +14,7 @@ APP_CONTENTS="$APP_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
 APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$EXECUTABLE_NAME"
+DMG_PATH="$ROOT_DIR/$APP_NAME.dmg"
 DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode-beta.app/Contents/Developer}"
 export DEVELOPER_DIR
 export CLANG_MODULE_CACHE_PATH="$SCRATCH_DIR/clang-module-cache"
@@ -37,6 +38,17 @@ build_app() {
   ditto "$build_dir/YouTubeKit_YouTubeKit.bundle" "$APP_RESOURCES/YouTubeKit_YouTubeKit.bundle"
   cp "$ROOT_DIR/Sources/PodcastTracker/Resources/AppIcon.icns" "$APP_RESOURCES/AppIcon.icns"
   codesign --force --deep --sign - "$APP_BUNDLE" >/dev/null
+}
+
+create_dmg() {
+  local staging_dir
+  staging_dir="$(mktemp -d "$DIST_DIR/.${APP_NAME}-dmg.XXXXXX")"
+  trap 'rm -rf "$staging_dir"' RETURN
+
+  ditto "$APP_BUNDLE" "$staging_dir/$APP_NAME.app"
+  ln -s /Applications "$staging_dir/Applications"
+  hdiutil create -volname "$APP_NAME" -srcfolder "$staging_dir" -format UDZO -ov "$DMG_PATH" >/dev/null
+  echo "Created $DMG_PATH"
 }
 
 stop_app() {
@@ -73,8 +85,11 @@ case "$MODE" in
     pgrep -x "$EXECUTABLE_NAME" >/dev/null
     echo "$APP_BUNDLE launched successfully"
     ;;
+  --dmg|dmg)
+    create_dmg
+    ;;
   *)
-    echo "usage: $0 [run|--debug|--logs|--telemetry|--verify]" >&2
+    echo "usage: $0 [run|--debug|--logs|--telemetry|--verify|--dmg]" >&2
     exit 2
     ;;
 esac

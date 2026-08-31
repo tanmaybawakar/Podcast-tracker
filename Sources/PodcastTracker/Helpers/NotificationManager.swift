@@ -18,6 +18,13 @@ struct LearningNotificationPlanItem: Identifiable, Equatable, Sendable {
     var podcastID: UUID
 }
 
+struct ScheduledPodcastNotification: Identifiable, Equatable, Sendable {
+    var id: String { "scheduled.\(podcastID.uuidString)" }
+    var podcastID: UUID
+    var title: String
+    var fireDate: Date
+}
+
 enum NotificationPlanner {
     static func plan(
         now: Date,
@@ -198,6 +205,27 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
             content.categoryIdentifier = Self.categoryIdentifier
             content.userInfo = ["podcastID": item.podcastID.uuidString]
             let components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: item.fireDate)
+            let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
+            try? await center.add(UNNotificationRequest(identifier: item.id, content: content, trigger: trigger))
+        }
+    }
+
+    func replaceScheduledPodcastReminders(with items: [ScheduledPodcastNotification]) async {
+        let pending = await center.pendingNotificationRequests()
+        let oldIDs = pending.map(\.identifier).filter { $0.hasPrefix("scheduled.") }
+        center.removePendingNotificationRequests(withIdentifiers: oldIDs)
+
+        for item in items where item.fireDate > Date() {
+            let content = UNMutableNotificationContent()
+            content.title = "Time for your scheduled podcast"
+            content.body = item.title
+            content.sound = .default
+            content.categoryIdentifier = Self.categoryIdentifier
+            content.userInfo = ["podcastID": item.podcastID.uuidString]
+            let components = Calendar.current.dateComponents(
+                [.year, .month, .day, .hour, .minute],
+                from: item.fireDate
+            )
             let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
             try? await center.add(UNNotificationRequest(identifier: item.id, content: content, trigger: trigger))
         }

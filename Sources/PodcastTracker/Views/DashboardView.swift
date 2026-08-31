@@ -21,7 +21,6 @@ struct TodayView: View {
             .padding(28)
             .frame(maxWidth: 1080, alignment: .leading)
         }
-        .background(.background)
     }
 
     private var rescueCard: some View {
@@ -90,7 +89,7 @@ struct TodayView: View {
             Spacer()
         }
         .padding(20)
-        .background(.background.secondary, in: .rect(cornerRadius: 18))
+        .themedCard(cornerRadius: 18)
     }
 
     private func metric(_ title: String, value: String, detail: String, symbol: String) -> some View {
@@ -100,7 +99,7 @@ struct TodayView: View {
             Text(detail).font(.caption).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading).padding(18)
-        .background(.background.secondary, in: .rect(cornerRadius: 16))
+        .themedCard(cornerRadius: 16)
     }
 
     private var recentActivity: some View {

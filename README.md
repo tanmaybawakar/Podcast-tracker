@@ -1,45 +1,68 @@
 # PodTrackio
 
-PodTrackio is a native macOS learning companion for educational video and
-podcast sessions. It helps people build a deliberate watching habit with a
-library, progress goals, focused playback, local notifications, and optional
-AI-generated study summaries.
+PodTrackio is a native macOS learning companion for educational YouTube videos
+and podcasts. It keeps a focused library, gives you a proper player, turns
+episodes into structured study notes, and helps you follow through on a real
+learning habit instead of another passive watch list.
 
-## What is included
+## Install
 
-- Native SwiftUI app for macOS 26 and later
-- YouTube metadata, captions, and playback support
-- Local library, categories, learning activity, goals, and notifications
-- Optional Groq-powered transcript summaries; keys stay in macOS Keychain
-- Supabase schema and migrations for an optional account-backed sync layer
+1. Download [PodTrackio.dmg](PodTrackio.dmg).
+2. Open the disk image.
+3. Drag **PodTrackio** to **Applications**.
+4. Open it from Applications.
 
-## Run it
+PodTrackio currently targets macOS 26 or later. The included app is ad-hoc
+signed for local distribution; if macOS shows a Gatekeeper warning, open it
+once from Finder with Control-click → **Open**. A Developer ID-notarized build
+is required for a warning-free public release.
 
-1. Install Xcode Beta with the macOS 26 SDK.
-2. Clone this repository and open it in Terminal.
-3. Run `./script/build_and_run.sh`.
+## What it does
 
-The script builds a local `dist/PodTrackio.app`, ad-hoc signs it, and launches
-it. Run `./script/build_and_run.sh --verify` to check the generated bundle.
+- Builds a personal library from YouTube URLs and playlists.
+- Plays video in-app, tracks watch progress, and supports local downloads.
+- Organizes episodes into collections, categories, and scheduled learning time.
+- Creates timestamped study briefs, key topics, takeaways, action plans, and
+  follow-up chat from a transcript.
+- Stores Groq and TranscriptAPI credentials in the macOS Keychain, not in app
+  data or this repository.
+- Keeps downloaded media local to the Mac; it is never synced through Supabase.
 
-## Configuration and privacy
+## AI summary setup
 
-The app stores local learning data under `~/Library/Application Support/PodcastTracker/`.
-Groq API keys are entered by the user in Settings and saved only in that user's
-macOS Keychain. Do not add keys to source files, plist files, commit messages,
-or issues.
+Add your Groq and TranscriptAPI keys in **Settings**. PodTrackio fetches a
+timestamped transcript when possible and uses Groq to create the learning
+brief. If a transcript is unavailable, you can import or paste one instead.
 
-The optional Supabase integration uses a client-side anon/publishable key. It
-is not a service-role secret; production deployments must enable Row Level
-Security and keep all privileged credentials outside the client.
+## Build from source
 
-## Contributing
+PodTrackio is a Swift Package that requires Xcode Beta with the macOS 26 SDK.
 
-Open an issue with a clear reproduction before a large change. Keep pull
-requests focused, do not commit generated build output, and run the test suite
-or the applicable build verification before submitting.
+```bash
+./script/build_and_run.sh
+```
+
+Useful commands:
+
+```bash
+./script/build_and_run.sh --verify  # build, validate, and launch the app
+./script/build_and_run.sh --dmg     # build a drag-to-Applications installer
+swift test                          # run the package test suite
+```
+
+The installer is created as `PodTrackio.dmg` at the repository root when
+prepared for a release. Local build output stays in `dist/` and is ignored by
+Git.
+
+## Privacy and security
+
+Your local library data lives under
+`~/Library/Application Support/PodcastTracker/`. Never commit API keys,
+service-role credentials, signing certificates, or local configuration. The
+optional Supabase client uses a publishable/anon client identifier; production
+deployments must enforce Row Level Security and keep privileged credentials on
+the server.
 
 ## License
 
-Released under the [MIT License](LICENSE). You may use, modify, distribute,
-and sell derivative work, subject to the license notice and warranty disclaimer.
+[MIT](LICENSE) © 2026 Tangenix Pvt. Ltd.

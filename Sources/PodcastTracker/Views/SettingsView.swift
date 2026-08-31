@@ -4,15 +4,234 @@ import UserNotifications
 struct SettingsView: View {
     @EnvironmentObject private var viewModel: AppViewModel
     var body: some View {
-        TabView {
-            HabitSettingsView().tabItem { Label("Habits", systemImage: "target") }
-            NotificationSettingsView().tabItem { Label("Notifications", systemImage: "bell") }
-            AISettingsView().tabItem { Label("AI", systemImage: "sparkles") }
-            CategorySettingsView().tabItem { Label("Categories", systemImage: "tag") }
-            AccountSettingsView().tabItem { Label("Account", systemImage: "person.crop.circle") }
+        ZStack {
+            ThemeBackdrop()
+            TabView {
+                AppearanceSettingsView().tabItem { Label("Appearance", systemImage: "paintpalette") }
+                HabitSettingsView().tabItem { Label("Habits", systemImage: "target") }
+                NotificationSettingsView().tabItem { Label("Notifications", systemImage: "bell") }
+                AISettingsView().tabItem { Label("AI", systemImage: "sparkles") }
+                DownloadSettingsView().tabItem { Label("Downloads", systemImage: "arrow.down.circle") }
+                CategorySettingsView().tabItem { Label("Categories", systemImage: "tag") }
+                CollectionSettingsView().tabItem { Label("Collections", systemImage: "rectangle.stack") }
+                AccountSettingsView().tabItem { Label("Account", systemImage: "person.crop.circle") }
+            }
+            .background(.clear)
         }
         .padding(18)
+        .applyingAppTheme()
         .onDisappear { viewModel.saveData(); viewModel.rescheduleNotifications() }
+    }
+}
+
+private struct AppearanceSettingsView: View {
+    @AppStorage(AppTheme.storageKey) private var selectedTheme = AppTheme.system.rawValue
+
+    private let columns = [GridItem(.adaptive(minimum: 185), spacing: 12)]
+
+    var body: some View {
+        Form {
+            Section("App Theme") {
+                Text("Choose the accent and appearance PodTrackio uses across windows, controls, and learning progress.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                LazyVGrid(columns: columns, spacing: 12) {
+                    ForEach(AppTheme.allCases) { theme in
+                        Button {
+                            selectedTheme = theme.rawValue
+                        } label: {
+                            ThemeOption(theme: theme, isSelected: selectedTheme == theme.rawValue)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(theme.name) theme")
+                        .accessibilityValue(selectedTheme == theme.rawValue ? "Selected" : "Not selected")
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+private struct ThemeOption: View {
+    let theme: AppTheme
+    let isSelected: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                ForEach(Array(theme.previewColors.enumerated()), id: \.offset) { _, color in
+                    Circle().fill(color).frame(width: 18, height: 18)
+                }
+                Spacer()
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(theme.tint)
+                        .accessibilityHidden(true)
+                }
+            }
+            Text(theme.name).font(.headline)
+            Text(theme.detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, minHeight: 116, alignment: .topLeading)
+        .background {
+            RoundedRectangle(cornerRadius: 12)
+                .fill(
+                    isSelected
+                        ? AnyShapeStyle(theme.tint.opacity(0.13))
+                        : AnyShapeStyle(.quaternary.opacity(0.24))
+                )
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(isSelected ? theme.tint : .clear, lineWidth: 1.5)
+        }
+        .contentShape(.rect(cornerRadius: 12))
+    }
+}
+
+private struct DownloadSettingsView: View {
+    @EnvironmentObject private var viewModel: AppViewModel
+    @ObservedObject private var mediaStore = LocalMediaStore.shared
+
+    private var records: [DownloadRecord] {
+        mediaStore.records.values.sorted { $0.downloadedAt > $1.downloadedAt }
+    }
+
+    var body: some View {
+        Form {
+            Section("Storage") {
+                LabeledContent("Used", value: bytes(mediaStore.storageUsedBytes))
+                LabeledContent("Available", value: bytes(mediaStore.remainingStorageBytes))
+                ProgressView(
+                    value: Double(mediaStore.storageUsedBytes),
+                    total: Double(mediaStore.settings.maximumStorageBytes)
+                )
+                Text("Downloads stop at 8 GB. PodTrackio never removes unfinished episodes to make room.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Future download quality") {
+                Picker("Quality", selection: $mediaStore.settings.quality) {
+                    ForEach(DownloadQuality.allCases) { quality in Text(quality.title).tag(quality) }
+                }
+                Text("Changing quality affects future downloads only. Existing files keep their current resolution.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if !mediaStore.transientStates.isEmpty {
+                Section("Download Queue") {
+                    ForEach(mediaStore.transientStates.keys.sorted(), id: \.self) { videoID in
+                        if let state = mediaStore.transientStates[videoID] {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(viewModel.podcasts.first(where: { $0.youtubeVideoId == videoID })?.title ?? videoID).lineLimit(1)
+                                    HStack {
+                                        Text(state.label)
+                                        if let downloaded = mediaStore.activeDownloadedBytes[videoID], downloaded > 0 {
+                                            Text("· \(bytes(downloaded))")
+                                        }
+                                    }.font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                switch state {
+                                case .queued, .downloading:
+                                    Button("Cancel", systemImage: "xmark.circle") { mediaStore.cancel(videoID: videoID) }
+                                        .labelStyle(.iconOnly).buttonStyle(.borderless)
+                                case .failed:
+                                    if let podcast = viewModel.podcasts.first(where: { $0.youtubeVideoId == videoID }) {
+                                        Button("Retry") { Task { _ = try? await viewModel.download(podcast) } }
+                                    }
+                                default:
+                                    EmptyView()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Section {
+                if records.isEmpty {
+                    ContentUnavailableView("No Downloads", systemImage: "arrow.down.circle", description: Text("Episodes you download for offline use appear here."))
+                } else {
+                    ForEach(records) { record in
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(viewModel.podcasts.first(where: { $0.youtubeVideoId == record.videoID })?.title ?? record.videoID)
+                                    .lineLimit(1)
+                                HStack(spacing: 8) {
+                                    Text(bytes(record.byteCount))
+                                    if let height = record.resolutionHeight { Text("\(height)p") }
+                                    Text(record.downloadedAt.formatted(date: .abbreviated, time: .shortened))
+                                    if let expires = record.retention.expirationDate {
+                                        Text("Deletes \(expires.formatted(date: .abbreviated, time: .omitted))").foregroundStyle(.orange)
+                                    } else if record.retention == .manual {
+                                        Text("Keep until deleted").foregroundStyle(.secondary)
+                                    }
+                                }.font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Delete", systemImage: "trash", role: .destructive) {
+                                mediaStore.deleteDownload(videoID: record.videoID)
+                            }
+                            .labelStyle(.iconOnly).buttonStyle(.borderless)
+                        }
+                    }
+                    Button("Delete All Completed Downloads", role: .destructive) {
+                        mediaStore.deleteCompletedDownloads(podcasts: viewModel.podcasts)
+                    }
+                }
+            } header: { Text("Downloaded Episodes") }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func bytes(_ value: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
+    }
+}
+
+private struct CollectionSettingsView: View {
+    @EnvironmentObject private var viewModel: AppViewModel
+    @State private var pendingDeletion: PodcastCollection?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Collections").font(.title2.bold())
+            Text("Collections preserve playlist grouping without replacing learning Categories.")
+                .foregroundStyle(.secondary)
+            if viewModel.collections.isEmpty {
+                ContentUnavailableView("No Collections", systemImage: "rectangle.stack", description: Text("Import a YouTube playlist to create one."))
+            } else {
+                List(viewModel.collections.sorted(by: { $0.sortOrder < $1.sortOrder })) { collection in
+                    HStack {
+                        Image(systemName: "rectangle.stack")
+                        VStack(alignment: .leading) {
+                            Text(collection.title)
+                            Text("\(viewModel.podcasts.filter { $0.collectionIDs.contains(collection.id) }.count) episodes")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Delete", systemImage: "trash", role: .destructive) { pendingDeletion = collection }
+                            .labelStyle(.iconOnly).buttonStyle(.borderless)
+                    }
+                }
+            }
+        }
+        .confirmationDialog(
+            "Delete Collection?",
+            isPresented: Binding(get: { pendingDeletion != nil }, set: { if !$0 { pendingDeletion = nil } }),
+            presenting: pendingDeletion
+        ) { collection in
+            Button("Delete \(collection.title)", role: .destructive) { viewModel.deleteCollection(collection) }
+        } message: { _ in
+            Text("Episodes remain in your library. Only the Collection grouping is removed.")
+        }
     }
 }
 
@@ -122,11 +341,34 @@ private struct NotificationSettingsView: View {
 private struct AISettingsView: View {
     @State private var key = ""
     @State private var hasStoredKey = KeychainStore.groqAPIKey() != nil
+    @State private var transcriptAPIKey = ""
+    @State private var hasStoredTranscriptAPIKey = KeychainStore.transcriptAPIKey() != nil
     @State private var status: String?
     @State private var isTesting = false
 
     var body: some View {
         Form {
+            Section {
+                SecureField(hasStoredTranscriptAPIKey ? "Stored in Keychain" : "TranscriptAPI key", text: $transcriptAPIKey)
+                HStack {
+                    Button("Save") {
+                        do {
+                            try KeychainStore.saveTranscriptAPIKey(transcriptAPIKey)
+                            hasStoredTranscriptAPIKey = true
+                            transcriptAPIKey = ""
+                            status = "TranscriptAPI key saved securely in Keychain."
+                        } catch { status = error.localizedDescription }
+                    }.disabled(transcriptAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("Remove", role: .destructive) {
+                        do {
+                            try KeychainStore.removeTranscriptAPIKey()
+                            hasStoredTranscriptAPIKey = false
+                            status = "TranscriptAPI key removed."
+                        } catch { status = error.localizedDescription }
+                    }.disabled(!hasStoredTranscriptAPIKey)
+                }
+            } header: { Text("TranscriptAPI key") }
+              footer: { Text("PodTrackio uses TranscriptAPI first to fetch a timestamped YouTube transcript, then sends it to Groq in safe-sized sections. This key stays only in macOS Keychain.") }
             Section {
                 SecureField(hasStoredKey ? "Stored in Keychain" : "gsk_…", text: $key)
                 HStack {

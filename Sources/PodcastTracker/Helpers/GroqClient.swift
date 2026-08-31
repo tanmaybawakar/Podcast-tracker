@@ -26,16 +26,151 @@ struct GroqSummaryPayload: Decodable, Sendable {
     struct Topic: Decodable, Sendable { let title: String; let explanation: String; let timestampSeconds: Double? }
     struct Takeaway: Decodable, Sendable { let title: String; let explanation: String }
     struct Action: Decodable, Sendable { let title: String; let detail: String }
+    struct Section: Decodable, Sendable {
+        struct Point: Decodable, Sendable { let title: String; let explanation: String; let timestampSeconds: Double? }
+        let title: String; let introduction: String?; let points: [Point]
+    }
     let brief: String
     let keyTopics: [Topic]
     let majorTakeaways: [Takeaway]
     let actionPlan: [Action]
+    let sections: [Section]?
 }
 
 struct GroqTranscriptPayload: Decodable, Sendable {
     struct Segment: Decodable, Sendable { let start: Double; let end: Double?; let text: String }
     let text: String
     let segments: [Segment]?
+}
+
+enum QuirkyModel: String, CaseIterable, Identifiable, Sendable {
+    case deep
+    case balanced
+    case instant
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .deep: "Deep"
+        case .balanced: "Balanced"
+        case .instant: "Instant"
+        }
+    }
+    var detail: String {
+        switch self {
+        case .deep: "Hard problems · GPT-OSS 120B"
+        case .balanced: "Thoughtful everyday help · Qwen 3.8 27B"
+        case .instant: "Quick answers · GPT-OSS 20B"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .deep: "brain.head.profile"
+        case .balanced: "scale.3d"
+        case .instant: "bolt.fill"
+        }
+    }
+    var modelID: String {
+        switch self {
+        case .deep: "openai/gpt-oss-120b"
+        case .balanced: "qwen/qwen3.8-27b"
+        case .instant: "openai/gpt-oss-20b"
+        }
+    }
+    var reasoningEffort: String {
+        switch self {
+        case .deep: "high"
+        case .balanced: "medium"
+        case .instant: "low"
+        }
+    }
+    var temperature: Double { self == .balanced ? 1.0 : 0.55 }
+}
+
+enum QuirkyPrompt {
+    static func system(episodeTitle: String, transcript: String) -> String {
+        """
+        You are Quirky, Tan's transcript-grounded learning mentor inside PodTrackio. You are a sharp thinking partner: practical, candid, curious, and allergic to generic advice.
+
+        WHO YOU ARE HELPING
+        Tan is a high-autonomy product founder and builder at Tangenix. He learns to ship and apply ideas, not to collect abstract notes. He values direct reasoning, premium product taste, concrete deliverables, global thinking, honest pushback, and fast execution. He may be applying a lesson to different projects; never assume which project or mix project details unless he identifies the context.
+
+        SOURCE DISCIPLINE
+        - Treat the episode transcript as the primary source of truth.
+        - The supplied transcript may be an excerpt selected for this question. Say when an answer would require material outside it.
+        - Clearly separate what the speaker said from your own analysis or recommendation.
+        - Never invent a quote, step, example, number, or timestamp. If the transcript does not support something, say that plainly.
+        - Cite useful transcript moments with the provided [m:ss] timestamp when available.
+        - If the speaker gives a numbered framework, process, checklist, stages, rules, or examples, recover every item you can find, preserve the order, and explain the missing or unclear items instead of silently compressing them.
+
+        MENTORING METHOD
+        - Lead with the direct answer. Do not restate the question or advertise the episode.
+        - Infer the real outcome Tan is trying to create, then connect the lesson to that outcome.
+        - Challenge weak assumptions respectfully and explain the tradeoff.
+        - For application questions, turn insight into a small executable plan: concrete action, deliverable, constraint, and success check. Prefer a useful first move Tan can do today.
+        - When brainstorming, offer 3-5 meaningfully different strategic options, label the angle, and recommend one with a reason.
+        - Ask at most one focused follow-up question when personalization genuinely depends on missing context. Still provide a useful provisional answer first.
+        - Use examples grounded in Tan's stated situation. Never fabricate his audience, budget, metrics, assets, or capabilities.
+
+        WRITING STANDARD
+        Write like a top-tier mentor in a real working session: concise, specific, confident, and human. Use short sections or bullets only when they make the answer easier to act on. Avoid motivational filler, vague verbs such as “optimize” without saying how, canned summaries, and bloated action plans. Match Tan's language and level of detail. End with a single clear next move when action is appropriate; do not force one onto simple factual answers.
+
+        EPISODE
+        \(episodeTitle)
+
+        TRANSCRIPT
+        \(transcript)
+        """
+    }
+}
+
+enum QuirkyContext {
+    /// Keeps one chat request comfortably below Groq's 8K TPM allowance once
+    /// the system instructions, recent conversation, and answer budget are added.
+    static let maximumTranscriptCharacters = 9_000
+    static let maximumHistoryCharacters = 600
+    static let maximumHistoryMessages = 3
+
+    static func transcriptExcerpt(_ transcript: String, for question: String) -> String {
+        guard transcript.count > maximumTranscriptCharacters else { return transcript }
+
+        let terms = Set(question.lowercased().split { !$0.isLetter && !$0.isNumber }
+            .filter { $0.count > 2 }
+            .map(String.init))
+        let lines = transcript.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard !lines.isEmpty else { return String(transcript.prefix(maximumTranscriptCharacters)) }
+
+        let rankedIndexes = lines.indices.sorted { lhs, rhs in
+            relevance(of: lines[lhs], terms: terms) > relevance(of: lines[rhs], terms: terms)
+        }
+        var selected = Set<Int>()
+        for index in rankedIndexes where relevance(of: lines[index], terms: terms) > 0 {
+            for nearby in max(0, index - 2)...min(lines.count - 1, index + 2) {
+                selected.insert(nearby)
+            }
+            if selected.count >= 80 { break }
+        }
+
+        guard !selected.isEmpty else { return String(transcript.prefix(maximumTranscriptCharacters)) }
+        var excerpt = ""
+        for index in selected.sorted() {
+            let line = lines[index]
+            guard excerpt.count + line.count + 1 <= maximumTranscriptCharacters else { break }
+            excerpt += (excerpt.isEmpty ? "" : "\n") + line
+        }
+        return excerpt.isEmpty ? String(transcript.prefix(maximumTranscriptCharacters)) : excerpt
+    }
+
+    static func recentHistory(_ history: [(role: String, content: String)]) -> [[String: String]] {
+        history.suffix(maximumHistoryMessages).map {
+            ["role": $0.role, "content": String($0.content.prefix(maximumHistoryCharacters))]
+        }
+    }
+
+    private static func relevance(of line: String, terms: Set<String>) -> Int {
+        let words = Set(line.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init))
+        return words.intersection(terms).count
+    }
 }
 
 final class GroqClient: @unchecked Sendable {
@@ -53,43 +188,35 @@ final class GroqClient: @unchecked Sendable {
 
     func summarize(transcript: String, title: String, apiKey: String) async throws -> GroqSummaryPayload {
         let prompt = """
-        You are an expert learning editor. Turn this educational podcast transcript into a compact study artifact that a busy person will actually read.
+        You are a rigorous learning editor. Turn this transcript into a faithful, useful study guide. The transcript is the only source of truth.
         Episode: \(title)
 
         Requirements:
-        - brief: a clear 60-second overview, 120-220 words.
-        - keyTopics: 4-8 ordered topics; use transcript seconds when they can be inferred, otherwise null.
-        - majorTakeaways: 3-6 consequential conclusions with explanation.
-        - actionPlan: 3-6 specific, realistic, checkable actions. Never use generic advice such as “learn more.”
-        - Do not invent claims beyond the transcript.
+        - sections: create a small number of sections whose titles and content are specific to this video. Do not use a fixed template.
+        - If the speaker presents numbered steps, a framework, process, checklist, stages, rules, or examples, make it impossible to miss: create a section for it and include every item in order as points. Preserve the speaker's wording where useful.
+        - Each point must explain what it means, not merely name it. Use timestamps when they can be inferred.
+        - brief, keyTopics, majorTakeaways and actionPlan remain required for backward compatibility, but they must also reflect the actual transcript.
+        - actionPlan must be basic, concrete, and tailored to the listener's likely use of this video's idea. No motivational filler, generic “learn more,” or invented business details.
+        - brief is a concise explanation of what the video teaches, not an advertisement for watching it.
+        - Do not invent claims beyond the transcript. If the transcript is unclear, say so.
 
         Transcript:
         \(transcript)
         """
-        let schema: [String: Any] = [
-            "type": "object", "additionalProperties": false,
+        let pointSchema: [String: Any] = ["type": "object", "additionalProperties": false,
+            "properties": ["title": ["type": "string"], "explanation": ["type": "string"], "timestampSeconds": ["type": ["number", "null"]]],
+            "required": ["title", "explanation", "timestampSeconds"]]
+        let sectionSchema: [String: Any] = ["type": "object", "additionalProperties": false,
+            "properties": ["title": ["type": "string"], "introduction": ["type": ["string", "null"]], "points": ["type": "array", "items": pointSchema]],
+            "required": ["title", "introduction", "points"]]
+        let schema: [String: Any] = ["type": "object", "additionalProperties": false,
             "properties": [
                 "brief": ["type": "string"],
-                "keyTopics": ["type": "array", "items": [
-                    "type": "object", "additionalProperties": false,
-                    "properties": [
-                        "title": ["type": "string"], "explanation": ["type": "string"],
-                        "timestampSeconds": ["type": ["number", "null"]]
-                    ], "required": ["title", "explanation", "timestampSeconds"]
-                ]],
-                "majorTakeaways": ["type": "array", "items": [
-                    "type": "object", "additionalProperties": false,
-                    "properties": ["title": ["type": "string"], "explanation": ["type": "string"]],
-                    "required": ["title", "explanation"]
-                ]],
-                "actionPlan": ["type": "array", "items": [
-                    "type": "object", "additionalProperties": false,
-                    "properties": ["title": ["type": "string"], "detail": ["type": "string"]],
-                    "required": ["title", "detail"]
-                ]]
-            ],
-            "required": ["brief", "keyTopics", "majorTakeaways", "actionPlan"]
-        ]
+                "keyTopics": ["type": "array", "items": ["type": "object", "additionalProperties": false, "properties": ["title": ["type": "string"], "explanation": ["type": "string"], "timestampSeconds": ["type": ["number", "null"]]], "required": ["title", "explanation", "timestampSeconds"]]],
+                "majorTakeaways": ["type": "array", "items": ["type": "object", "additionalProperties": false, "properties": ["title": ["type": "string"], "explanation": ["type": "string"]], "required": ["title", "explanation"]]],
+                "actionPlan": ["type": "array", "items": ["type": "object", "additionalProperties": false, "properties": ["title": ["type": "string"], "detail": ["type": "string"]], "required": ["title", "detail"]]],
+                "sections": ["type": "array", "items": sectionSchema]
+            ], "required": ["brief", "keyTopics", "majorTakeaways", "actionPlan", "sections"]]
         let body: [String: Any] = [
             "model": "openai/gpt-oss-120b",
             "messages": [["role": "user", "content": prompt]],
@@ -110,6 +237,29 @@ final class GroqClient: @unchecked Sendable {
               let contentData = content.data(using: .utf8) else { throw GroqError.malformedResponse }
         do { return try JSONDecoder().decode(GroqSummaryPayload.self, from: contentData) }
         catch { throw GroqError.malformedResponse }
+    }
+
+    func chat(transcript: String, title: String, question: String, history: [(role: String, content: String)], model: QuirkyModel, apiKey: String) async throws -> String {
+        let excerpt = QuirkyContext.transcriptExcerpt(transcript, for: question)
+        let system = QuirkyPrompt.system(episodeTitle: title, transcript: excerpt)
+        var messages: [[String: String]] = [["role": "system", "content": system]]
+        messages.append(contentsOf: QuirkyContext.recentHistory(history))
+        messages.append(["role": "user", "content": String(question.prefix(1_000))])
+        let body: [String: Any] = [
+            "model": model.modelID,
+            "messages": messages,
+            "temperature": model.temperature,
+            "reasoning_effort": model.reasoningEffort,
+            "reasoning_format": "hidden",
+            "max_completion_tokens": 800
+        ]
+        var request = URLRequest(url: baseURL.appendingPathComponent("chat/completions"))
+        request.httpMethod = "POST"; request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type"); request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let data = try await perform(request)
+        struct Response: Decodable { struct Choice: Decodable { struct Message: Decodable { let content: String }; let message: Message }; let choices: [Choice] }
+        guard let content = try JSONDecoder().decode(Response.self, from: data).choices.first?.message.content, !content.isEmpty else { throw GroqError.malformedResponse }
+        return content
     }
 
     func transcribe(fileURL: URL, apiKey: String) async throws -> GroqTranscriptPayload {

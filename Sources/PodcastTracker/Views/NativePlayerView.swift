@@ -14,6 +14,7 @@ struct NativePlayerView: View {
     let videoId: String
     let startPosition: Double
     let reloadID: UUID
+    let source: NativePlaybackSource
     @ObservedObject var controller: PlayerController
     let onTimeUpdate: (Double) -> Void
     let onDurationReady: (Double) -> Void
@@ -36,9 +37,12 @@ struct NativePlayerView: View {
             } else {
                 VStack(spacing: 12) {
                     ProgressView().controlSize(.large)
-                    Text("Loading stream…")
+                    Text(source == .local ? "Opening downloaded episode…" : "Opening stream…")
                         .font(.callout)
                         .foregroundStyle(.secondary)
+                    Text(source == .local ? "Offline playback · your saved position will be restored." : "Streaming does not save the video to this Mac.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                 }
             }
         }
@@ -51,7 +55,7 @@ struct NativePlayerView: View {
         player = nil
         previousPlayer?.pause()
         do {
-            let item = try await YouTubeStreamResolver.playableItem(videoId: videoId)
+            let item = try await YouTubeStreamResolver.playableItem(videoId: videoId, source: source)
             guard !Task.isCancelled else { return }
             let newPlayer = AVPlayer(playerItem: item)
             newPlayer.automaticallyWaitsToMinimizeStalling = true

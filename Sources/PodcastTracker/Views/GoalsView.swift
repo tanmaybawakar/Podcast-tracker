@@ -3,6 +3,7 @@ import SwiftUI
 struct LearningProgressView: View {
     @EnvironmentObject private var viewModel: AppViewModel
     @State private var displayedMonth = Date()
+    @State private var showScheduleSheet = false
 
     var body: some View {
         ScrollView {
@@ -21,6 +22,9 @@ struct LearningProgressView: View {
                 AchievementsView()
             }.padding(28).frame(maxWidth: 1080, alignment: .leading)
         }
+        .sheet(isPresented: $showScheduleSheet) {
+            ScheduleDaySheet(day: viewModel.selectedCalendarDate).environmentObject(viewModel)
+        }
     }
 
     private var calendar: some View {
@@ -32,7 +36,12 @@ struct LearningProgressView: View {
                 Button("Today") { displayedMonth = Date(); viewModel.selectedCalendarDate = Date() }
                 Button("Next Month", systemImage: "chevron.right") { shiftMonth(1) }.labelStyle(.iconOnly)
             }
-            MonthGrid(month: displayedMonth, selection: $viewModel.selectedCalendarDate, activities: viewModel.activities)
+            MonthGrid(
+                month: displayedMonth,
+                selection: $viewModel.selectedCalendarDate,
+                activities: viewModel.activities,
+                scheduledDates: viewModel.podcasts.compactMap(\.scheduledAt)
+            )
             if let day = viewModel.activity(for: viewModel.selectedCalendarDate) {
                 HStack(spacing: 24) {
                     Label("\(Int(day.watchedSeconds / 60)) minutes", systemImage: "timer")
@@ -42,6 +51,33 @@ struct LearningProgressView: View {
                 }.font(.subheadline).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 Text("No recorded activity on this day.").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Divider()
+            HStack {
+                Text("Scheduled").font(.headline)
+                Spacer()
+                Button("Add Podcast", systemImage: "calendar.badge.plus") { showScheduleSheet = true }
+                    .buttonStyle(.glass)
+            }
+            let scheduled = viewModel.scheduledPodcasts(on: viewModel.selectedCalendarDate)
+            if scheduled.isEmpty {
+                Text("Nothing scheduled for this day.").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ForEach(scheduled) { podcast in
+                    HStack {
+                        Image(systemName: "play.rectangle")
+                        VStack(alignment: .leading) {
+                            Text(podcast.title).lineLimit(1)
+                            if let date = podcast.scheduledAt {
+                                Text(date.formatted(date: .omitted, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        Button("Open") { viewModel.selectPodcast(podcast) }.buttonStyle(.glass)
+                        Button("Remove Schedule", systemImage: "xmark") { viewModel.removeSchedule(for: podcast) }
+                            .labelStyle(.iconOnly).buttonStyle(.glass)
+                    }
+                }
             }
         }.padding(20).background(.quaternary.opacity(0.28), in: .rect(cornerRadius: 18))
     }
@@ -142,6 +178,7 @@ private struct MonthGrid: View {
     let month: Date
     @Binding var selection: Date
     let activities: [DailyLearningActivity]
+    let scheduledDates: [Date]
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 5), count: 7)
     private var days: [Date?] {
         let calendar = Calendar.current
@@ -164,18 +201,22 @@ private struct MonthGrid: View {
     private func dayButton(_ date: Date) -> some View {
         let key = LearningCalendar.dateKey(for: date)
         let activity = activities.first { $0.dateKey == key }
+        let isScheduled = scheduledDates.contains { Calendar.current.isDate($0, inSameDayAs: date) }
         let selected = Calendar.current.isDate(date, inSameDayAs: selection)
         return Group {
-            if selected { dayButtonLabel(date, activity: activity).buttonStyle(.glassProminent) }
-            else { dayButtonLabel(date, activity: activity).buttonStyle(.plain) }
+            if selected { dayButtonLabel(date, activity: activity, isScheduled: isScheduled).buttonStyle(.glassProminent) }
+            else { dayButtonLabel(date, activity: activity, isScheduled: isScheduled).buttonStyle(.plain) }
         }.accessibilityLabel(date.formatted(date: .complete, time: .omitted))
     }
 
-    private func dayButtonLabel(_ date: Date, activity: DailyLearningActivity?) -> some View {
+    private func dayButtonLabel(_ date: Date, activity: DailyLearningActivity?, isScheduled: Bool) -> some View {
         Button { selection = date } label: {
             VStack(spacing: 3) {
                 Text("\(Calendar.current.component(.day, from: date))").monospacedDigit()
-                Circle().fill(activity?.goalCompleted == true ? Color.green : activity == nil ? Color.clear : Color.accentColor).frame(width: 5, height: 5)
+                HStack(spacing: 3) {
+                    Circle().fill(activity?.goalCompleted == true ? Color.green : activity == nil ? Color.clear : Color.accentColor).frame(width: 5, height: 5)
+                    Circle().fill(isScheduled ? Color.orange : Color.clear).frame(width: 5, height: 5)
+                }
             }.frame(maxWidth: .infinity, minHeight: 38)
         }
     }

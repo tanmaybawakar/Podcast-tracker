@@ -19,14 +19,17 @@ struct MainView: View {
                 }
             }
         } detail: {
-            Group {
-                if let podcast = viewModel.selectedPodcast {
-                    PlayerView(podcast: podcast)
-                } else {
-                    switch viewModel.selectedSection {
-                    case .today: TodayView()
-                    case .library: LibraryView()
-                    case .progress: LearningProgressView()
+            ZStack {
+                ThemeBackdrop()
+                Group {
+                    if let podcast = viewModel.selectedPodcast {
+                        PlayerView(podcast: podcast)
+                    } else {
+                        switch viewModel.selectedSection {
+                        case .today: TodayView()
+                        case .library: LibraryView()
+                        case .progress: LearningProgressView()
+                        }
                     }
                 }
             }
@@ -63,6 +66,7 @@ struct MainView: View {
         }
         .overlay(alignment: .top) { toastLayer }
         .onChange(of: viewModel.selectedSection) { _, _ in viewModel.selectedPodcast = nil }
+        .applyingAppTheme()
     }
 
     @ViewBuilder private var toastLayer: some View {
