@@ -55,8 +55,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .environmentObject(AuthManager.shared)
             .frame(minWidth: 860, minHeight: 620)
         let hostingController = NSHostingController(rootView: rootView)
+        #if APP_STORE
+        let initialSize = NSSize(width: 1440, height: 900)
+        #else
+        let initialSize = NSSize(width: 1280, height: 820)
+        #endif
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820),
+            contentRect: NSRect(origin: .zero, size: initialSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -64,15 +69,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.title = "PodTrackio"
         window.minSize = NSSize(width: 860, height: 620)
         window.contentViewController = hostingController
+        window.setContentSize(initialSize)
         window.isReleasedWhenClosed = false
         window.collectionBehavior.insert(.moveToActiveSpace)
+        #if !APP_STORE
         window.setFrameAutosaveName("PodTrackioMainWindow")
+        #endif
         window.center()
 
         let controller = NSWindowController(window: window)
         primaryWindowController = controller
         controller.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
+        captureScreenshotIfRequested(from: window)
+    }
+
+    private func captureScreenshotIfRequested(from window: NSWindow) {
+        #if SCREENSHOT_CAPTURE
+        let environment = ProcessInfo.processInfo.environment
+        guard let outputPath = environment["PODTRACKIO_SCREENSHOT_PATH"] else { return }
+        switch environment["PODTRACKIO_SCREENSHOT_VIEW"] {
+        case "library": AppViewModel.shared.selectedSection = .library
+        case "progress": AppViewModel.shared.selectedSection = .progress
+        case "add": AppViewModel.shared.showAddPodcast = true
+        default: AppViewModel.shared.selectedSection = .today
+        }
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            guard let view = window.contentView,
+                  let representation = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+            view.cacheDisplay(in: view.bounds, to: representation)
+            guard let data = representation.representation(using: .png, properties: [:]) else { return }
+            try? data.write(to: URL(fileURLWithPath: outputPath), options: .atomic)
+        }
+        #endif
     }
 
     private func requestInitialWindowIfNeeded() {

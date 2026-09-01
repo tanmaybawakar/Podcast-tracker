@@ -11,7 +11,9 @@ struct SettingsView: View {
                 HabitSettingsView().tabItem { Label("Habits", systemImage: "target") }
                 NotificationSettingsView().tabItem { Label("Notifications", systemImage: "bell") }
                 AISettingsView().tabItem { Label("AI", systemImage: "sparkles") }
+                #if !APP_STORE
                 DownloadSettingsView().tabItem { Label("Downloads", systemImage: "arrow.down.circle") }
+                #endif
                 CategorySettingsView().tabItem { Label("Categories", systemImage: "tag") }
                 CollectionSettingsView().tabItem { Label("Collections", systemImage: "rectangle.stack") }
                 AccountSettingsView().tabItem { Label("Account", systemImage: "person.crop.circle") }

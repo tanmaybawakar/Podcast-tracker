@@ -20,6 +20,9 @@ struct AddPodcastSheet: View {
     @State private var previewTask: Task<Void, Never>?
 
     private var videoID: String? { Podcast.extractVideoId(from: url) }
+    private var availableModes: [Mode] {
+        DistributionChannel.allowsExternalMediaTools ? Mode.allCases : [.episode]
+    }
     private var canSaveEpisode: Bool {
         !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && videoID != nil
     }
@@ -27,10 +30,12 @@ struct AddPodcastSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Picker("Add", selection: $mode) {
-                    ForEach(Mode.allCases) { Text($0.rawValue).tag($0) }
+                if availableModes.count > 1 {
+                    Picker("Add", selection: $mode) {
+                        ForEach(availableModes) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
 
                 if mode == .episode { episodeForm } else { playlistForm }
 
@@ -40,7 +45,9 @@ struct AddPodcastSheet: View {
                             Label(category.name, systemImage: category.symbolName).tag(category.id)
                         }
                     }
-                    Text("Playlist imports become a separate Collection. This Category is applied only to newly added episodes.")
+                    Text(DistributionChannel.allowsExternalMediaTools
+                         ? "Playlist imports become a separate Collection. This Category is applied only to newly added episodes."
+                         : "This Category is applied to the episode you add.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }

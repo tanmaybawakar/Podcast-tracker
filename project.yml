@@ -1,0 +1,86 @@
+name: PodTrackio
+
+options:
+  bundleIdPrefix: com.tangenix
+  deploymentTarget:
+    macOS: "26.0"
+  xcodeVersion: "27.0"
+
+packages:
+  YouTubeMetadata:
+    url: https://github.com/arraypress/swift-youtube-metadata.git
+    revision: ba3ed87b7d8ce99a1b510f12ba453547c4a4d3cc
+  YouTubeKit:
+    url: https://github.com/b5i/YouTubeKit.git
+    revision: 6532af39da4c1612b0a1af603792419d8fb0e67f
+
+targets:
+  PodTrackio:
+    type: application
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Sources/PodcastTracker
+        excludes:
+          - Resources/AppIcon.icns
+      - path: AppStore/Assets.xcassets
+    resources:
+      - path: PodTrackio.icon
+    dependencies:
+      - package: YouTubeMetadata
+        product: YouTubeTranscript
+      - package: YouTubeKit
+        product: YouTubeKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tangenix.podtrackio
+        PRODUCT_NAME: PodTrackio
+        PRODUCT_MODULE_NAME: PodcastTracker
+        DEVELOPMENT_TEAM: 4MV5J2X948
+        CODE_SIGN_STYLE: Automatic
+        MARKETING_VERSION: 1.0
+        CURRENT_PROJECT_VERSION: 1
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: AppStore/Info.plist
+        CODE_SIGN_ENTITLEMENTS: AppStore/PodTrackio.entitlements
+        SWIFT_VERSION: 6.0
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) APP_STORE"
+        ASSETCATALOG_COMPILER_APPICON_NAME: PodTrackio
+        ENABLE_APP_SANDBOX: YES
+        ENABLE_HARDENED_RUNTIME: YES
+        COMBINE_HIDPI_IMAGES: YES
+        DEAD_CODE_STRIPPING: YES
+
+  PodTrackioTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Tests/PodcastTrackerTests
+    dependencies:
+      - target: PodTrackio
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tangenix.podtrackio.tests
+        DEVELOPMENT_TEAM: 4MV5J2X948
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: 6.0
+
+schemes:
+  PodTrackio:
+    build:
+      targets:
+        PodTrackio: all
+        PodTrackioTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - PodTrackioTests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

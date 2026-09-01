@@ -1,0 +1,79 @@
+{
+  "fill-specializations" : [
+    {
+      "value" : {
+        "linear-gradient" : [
+          "display-p3:0.60617,0.94042,0.94918,1.00000",
+          "display-p3:0.14074,0.33554,0.69503,1.00000"
+        ]
+      }
+    },
+    {
+      "appearance" : "dark",
+      "value" : {
+        "linear-gradient" : [
+          "display-p3:0.11988,0.29521,0.59817,1.00000",
+          "display-p3:0.32056,0.69159,0.71997,1.00000"
+        ]
+      }
+    }
+  ],
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "blend-mode-specializations" : [
+            {
+              "appearance" : "tinted",
+              "value" : "normal"
+            }
+          ],
+          "glass" : true,
+          "hidden" : false,
+          "image-name" : "Logo asset copy 2.png",
+          "name" : "Logo asset copy 2",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              -81.15625,
+              -3
+            ]
+          }
+        },
+        {
+          "image-name" : "Logo asset copy 4.png",
+          "name" : "Logo asset copy 4",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              280.84375,
+              245
+            ]
+          }
+        },
+        {
+          "image-name" : "Logo asset copy 3.png",
+          "name" : "Logo asset copy 3",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              246.84375,
+              -229.5
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.6
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.2
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : "shared"
+  }
+}

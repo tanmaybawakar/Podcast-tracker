@@ -36,7 +36,7 @@ build_app() {
   /usr/libexec/PlistBuddy -c "Add :NSPrincipalClass string NSApplication" "$APP_CONTENTS/Info.plist" 2>/dev/null || true
   ditto "$build_dir/PodcastTracker_PodcastTracker.bundle" "$APP_RESOURCES/PodcastTracker_PodcastTracker.bundle"
   ditto "$build_dir/YouTubeKit_YouTubeKit.bundle" "$APP_RESOURCES/YouTubeKit_YouTubeKit.bundle"
-  cp "$ROOT_DIR/Sources/PodcastTracker/Resources/AppIcon.icns" "$APP_RESOURCES/AppIcon.icns"
+  ditto "$ROOT_DIR/PodTrackio.icon" "$APP_RESOURCES/PodTrackio.icon"
   codesign --force --deep --sign - "$APP_BUNDLE" >/dev/null
 }
 

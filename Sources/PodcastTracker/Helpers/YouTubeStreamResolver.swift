@@ -38,9 +38,11 @@ enum YouTubeStreamResolver {
             }
             return AVPlayerItem(url: url)
         }
+        #if !APP_STORE
         if let url = try? await ytDLPStreamURL(videoId: videoId) {
             return AVPlayerItem(url: url)
         }
+        #endif
 
         let response = try await YTVideo(videoId: videoId)
             .fetchStreamingInfosWithDownloadFormatsThrowing(youtubeModel: YouTubeModel(), useCookies: false)
@@ -63,6 +65,7 @@ enum YouTubeStreamResolver {
         throw ResolverError.noPlayableStream
     }
 
+    #if !APP_STORE
     private static func ytDLPStreamURL(videoId: String) async throws -> URL {
         let allowedCharacters = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
         guard videoId.count == 11, videoId.unicodeScalars.allSatisfy(allowedCharacters.contains) else {
@@ -166,6 +169,7 @@ enum YouTubeStreamResolver {
         }
         return nil
     }
+    #endif
 
     private static func adaptiveCompositionItem(from formats: [any AdaptiveDownloadFormat]) async throws -> AVPlayerItem {
         let videos = formats.filter {

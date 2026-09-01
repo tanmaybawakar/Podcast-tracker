@@ -1,0 +1,22 @@
+{
+  "originHash" : "3d4bda27d00cf2722ac62113c24d40a933d37b3bc97100c3c9c0708b032abe5b",
+  "pins" : [
+    {
+      "identity" : "swift-youtube-metadata",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/arraypress/swift-youtube-metadata.git",
+      "state" : {
+        "revision" : "ba3ed87b7d8ce99a1b510f12ba453547c4a4d3cc"
+      }
+    },
+    {
+      "identity" : "youtubekit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/b5i/YouTubeKit.git",
+      "state" : {
+        "revision" : "6532af39da4c1612b0a1af603792419d8fb0e67f"
+      }
+    }
+  ],
+  "version" : 3
+}

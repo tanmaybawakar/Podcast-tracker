@@ -37,6 +37,9 @@ enum PlaylistImporter {
     }
 
     static func preview(url input: String) async throws -> PlaylistPreview {
+        #if APP_STORE
+        throw ImportError.ytDLPUnavailable
+        #else
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let components = URLComponents(string: trimmed),
               components.host?.contains("youtube.com") == true,
@@ -106,6 +109,7 @@ enum PlaylistImporter {
             episodes: episodes,
             unavailableCount: unavailable
         )
+        #endif
     }
 
     private static func ytDLPURL() -> URL? {

@@ -290,6 +290,9 @@ final class LocalMediaStore: ObservableObject {
         maximumBytes: Int64,
         invocation: Invocation
     ) async throws -> PreparedMedia {
+        #if APP_STORE
+        throw MediaError.ytDLPUnavailable
+        #else
         let processTask = Task.detached(priority: .userInitiated) {
             let fileManager = FileManager.default
             let clientArguments = [
@@ -371,6 +374,7 @@ final class LocalMediaStore: ObservableObject {
         } onCancel: {
             processTask.cancel()
         }
+        #endif
     }
 
     private nonisolated static func removeAttemptFiles(destination: URL, fileManager: FileManager) {
@@ -399,6 +403,9 @@ final class LocalMediaStore: ObservableObject {
     }
 
     private nonisolated static func ytDLPInvocation(fileManager: FileManager) -> Invocation? {
+        #if APP_STORE
+        nil
+        #else
         for path in ["/opt/homebrew/bin/yt-dlp", "/usr/local/bin/yt-dlp", "/opt/local/bin/yt-dlp"]
         where fileManager.isExecutableFile(atPath: path) {
             return Invocation(executableURL: URL(fileURLWithPath: path), argumentPrefix: [])
@@ -410,9 +417,13 @@ final class LocalMediaStore: ObservableObject {
             return Invocation(executableURL: URL(fileURLWithPath: python), argumentPrefix: [local.path])
         }
         return nil
+        #endif
     }
 
     private nonisolated static func javaScriptRuntimeArguments(fileManager: FileManager) -> [String]? {
+        #if APP_STORE
+        nil
+        #else
         for path in ["/opt/homebrew/bin/deno", "/usr/local/bin/deno", "/opt/local/bin/deno"]
         where fileManager.isExecutableFile(atPath: path) {
             return ["--js-runtimes", "deno:\(path)"]
@@ -422,5 +433,6 @@ final class LocalMediaStore: ObservableObject {
             return ["--js-runtimes", "node:\(path)"]
         }
         return nil
+        #endif
     }
 }

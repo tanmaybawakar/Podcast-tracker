@@ -7,13 +7,13 @@ struct PlayerView: View {
     @ObservedObject private var mediaStore = LocalMediaStore.shared
     let podcast: Podcast
     @StateObject private var playerController = PlayerController()
-    @State private var useNativePlayer = true
+    @State private var useNativePlayer = !DistributionChannel.isAppStore
     @State private var playbackFailed = false
     @State private var playbackAttemptID = UUID()
     @State private var nativeRetryCount = 0
     @State private var showFileImporter = false
     @State private var showPasteSheet = false
-    @State private var playbackSource: NativePlaybackSource?
+    @State private var playbackSource: NativePlaybackSource? = DistributionChannel.isAppStore ? .stream : nil
     @State private var isPreparingDownload = false
     @State private var playbackChoiceError: String?
     @State private var showScheduleSheet = false
@@ -76,7 +76,9 @@ struct PlayerView: View {
                     showScheduleSheet = true
                 }
                 .buttonStyle(.glass)
+                #if !APP_STORE
                 downloadAction
+                #endif
             }
             .font(.subheadline).padding(16)
         }
@@ -160,22 +162,28 @@ struct PlayerView: View {
 
     private func chooseInitialPlaybackSource() {
         playbackChoiceError = nil
+        #if APP_STORE
+        useNativePlayer = false
+        playbackSource = .stream
+        #else
         if mediaStore.cachedPlayableURL(videoId: currentPodcast.youtubeVideoId) != nil {
             playbackSource = .local
         } else {
             playbackSource = nil
         }
+        #endif
     }
 
     private func stream() {
         playbackChoiceError = nil
-        useNativePlayer = true
+        useNativePlayer = !DistributionChannel.isAppStore
         playbackFailed = false
         nativeRetryCount = 0
         playbackSource = .stream
         playbackAttemptID = UUID()
     }
 
+    #if !APP_STORE
     private func downloadAndPlay() {
         guard !isPreparingDownload else { return }
         isPreparingDownload = true
@@ -212,8 +220,16 @@ struct PlayerView: View {
             .buttonStyle(.glass)
         }
     }
+    #endif
 
     private var playbackChoiceView: some View {
+        #if APP_STORE
+        ProgressView("Preparing secure streaming…")
+            .controlSize(.large)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(.black)
+            .foregroundStyle(.white)
+        #else
         VStack(spacing: 16) {
             Image(systemName: "play.rectangle.on.rectangle")
                 .font(.system(size: 42))
@@ -246,6 +262,7 @@ struct PlayerView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.black)
         .foregroundStyle(.white)
+        #endif
     }
 
     private var unavailableView: some View {
