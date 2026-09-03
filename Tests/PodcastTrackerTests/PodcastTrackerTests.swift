@@ -2,6 +2,32 @@ import Foundation
 import Testing
 @testable import PodcastTracker
 
+@Suite("Supabase podcast payloads")
+struct SupabasePodcastPayloadTests {
+    @Test func bulkRowsKeepIdenticalKeysWhenOptionalValuesDiffer() throws {
+        let empty = Podcast(title: "Fresh", url: "https://youtu.be/aaaaaaaaaaa", youtubeVideoId: "aaaaaaaaaaa")
+        let watched = Podcast(
+            title: "Watched", url: "https://youtu.be/bbbbbbbbbbb", youtubeVideoId: "bbbbbbbbbbb",
+            thumbnailURL: "https://example.com/thumb.jpg", lastWatchedDate: Date(),
+            lastPlaybackPosition: 42, completedAt: Date(), scheduledAt: Date(), duration: 120
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let data = try encoder.encode([
+            PodcastDTO(model: empty, legacyCategory: "General"),
+            PodcastDTO(model: watched, legacyCategory: "General")
+        ])
+        let rows = try #require(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        #expect(Set(rows[0].keys) == Set(rows[1].keys))
+        #expect(rows[0]["thumbnail_url"] is NSNull)
+        #expect(rows[0]["last_watched_date"] is NSNull)
+        #expect(rows[0]["completed_at"] is NSNull)
+        #expect(rows[0]["scheduled_at"] is NSNull)
+        #expect(rows[0]["duration"] is NSNull)
+    }
+}
+
 @Suite("Category migration and management")
 struct CategoryTests {
     @Test func legacyPodcastCategoryDecodesToStableID() throws {

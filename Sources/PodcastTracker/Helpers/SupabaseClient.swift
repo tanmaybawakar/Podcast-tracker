@@ -291,6 +291,17 @@ struct PodcastDTO: Codable {
     var category: String?
     var duration: Double?
 
+    /// PostgREST requires every object in a bulk upsert to contain the same
+    /// keys. Synthesized Codable omits nil optionals, which made a mixed
+    /// library (for example, only some episodes having playback progress)
+    /// fail with PGRST102 and prevented the entire podcast list from syncing.
+    private enum CodingKeys: String, CodingKey {
+        case id, title, url, youtubeVideoId, thumbnailURL, dateAdded, notes
+        case totalWatchedSeconds, lastWatchedDate, lastPlaybackPosition
+        case isCompleted, completedAt, scheduledAt, collectionIDs
+        case categoryID, category, duration
+    }
+
     init(model: Podcast, legacyCategory: String) {
         id = model.id; title = model.title; url = model.url; youtubeVideoId = model.youtubeVideoId
         thumbnailURL = model.thumbnailURL; dateAdded = model.dateAdded; notes = model.notes
@@ -298,6 +309,27 @@ struct PodcastDTO: Codable {
         lastPlaybackPosition = model.lastPlaybackPosition; isCompleted = model.isCompleted
         completedAt = model.completedAt; scheduledAt = model.scheduledAt; collectionIDs = model.collectionIDs
         categoryID = model.categoryID; category = legacyCategory; duration = model.duration
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(title, forKey: .title)
+        try container.encode(url, forKey: .url)
+        try container.encode(youtubeVideoId, forKey: .youtubeVideoId)
+        try container.encode(thumbnailURL, forKey: .thumbnailURL)
+        try container.encode(dateAdded, forKey: .dateAdded)
+        try container.encode(notes, forKey: .notes)
+        try container.encode(totalWatchedSeconds, forKey: .totalWatchedSeconds)
+        try container.encode(lastWatchedDate, forKey: .lastWatchedDate)
+        try container.encode(lastPlaybackPosition, forKey: .lastPlaybackPosition)
+        try container.encode(isCompleted, forKey: .isCompleted)
+        try container.encode(completedAt, forKey: .completedAt)
+        try container.encode(scheduledAt, forKey: .scheduledAt)
+        try container.encode(collectionIDs, forKey: .collectionIDs)
+        try container.encode(categoryID, forKey: .categoryID)
+        try container.encode(category, forKey: .category)
+        try container.encode(duration, forKey: .duration)
     }
 
     var model: Podcast {
