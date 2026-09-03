@@ -1,6 +1,8 @@
 import Foundation
 import SwiftUI
 import AuthenticationServices
+import CryptoKit
+import Security
 
 // MARK: - Presentation Context Provider
 
@@ -29,6 +31,8 @@ final class AuthManager: ObservableObject {
     @Published var avatarURL: String?
     @Published var accessToken: String?
     @Published var refreshToken: String?
+    @Published private(set) var isSigningIn = false
+    @Published private(set) var authErrorMessage: String?
 
     // MARK: - Constants
 
@@ -55,6 +59,10 @@ final class AuthManager: ObservableObject {
     private let presentationContextProvider: AuthPresentationContextProvider
     /// Local HTTP server that captures Supabase's localhost:3000 redirect.
     private let localAuthServer: LocalAuthCallbackServer
+    /// Keep the browser session alive until Google OAuth completes.
+    private var webAuthSession: ASWebAuthenticationSession?
+    /// The unhashed nonce sent to Supabase after Apple returns its identity token.
+    private var appleRawNonce: String?
 
     // MARK: - Initializer
 
@@ -73,12 +81,56 @@ final class AuthManager: ObservableObject {
 
     /// Initiates Google OAuth sign-in via Supabase.
     func signInWithGoogle() {
+        authErrorMessage = nil
+        isSigningIn = true
         startOAuthFlow(provider: "google")
     }
 
-    /// Initiates Apple OAuth sign-in via Supabase.
-    func signInWithApple() {
-        startOAuthFlow(provider: "apple")
+    /// Configures the native Sign in with Apple request with a one-time nonce.
+    func prepareAppleSignInRequest(_ request: ASAuthorizationAppleIDRequest) {
+        authErrorMessage = nil
+        isSigningIn = true
+
+        let rawNonce = Self.randomNonce()
+        appleRawNonce = rawNonce
+        request.requestedScopes = [.fullName, .email]
+        request.nonce = Self.sha256(rawNonce)
+    }
+
+    /// Exchanges Apple's native identity token for a Supabase session.
+    func handleAppleSignIn(_ result: Result<ASAuthorization, Error>) {
+        switch result {
+        case .success(let authorization):
+            guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
+                  let identityTokenData = credential.identityToken,
+                  let identityToken = String(data: identityTokenData, encoding: .utf8),
+                  let rawNonce = appleRawNonce else {
+                appleRawNonce = nil
+                isSigningIn = false
+                authErrorMessage = "Apple did not return a valid sign-in credential. Please try again."
+                return
+            }
+
+            appleRawNonce = nil
+            let fullName = credential.fullName
+            Task {
+                await exchangeAppleIdentityToken(identityToken, nonce: rawNonce, fullName: fullName)
+            }
+
+        case .failure(let error):
+            appleRawNonce = nil
+            isSigningIn = false
+            let nsError = error as NSError
+            if nsError.domain == ASAuthorizationError.errorDomain,
+               nsError.code == ASAuthorizationError.canceled.rawValue {
+                return
+            }
+            authErrorMessage = Self.friendlyAppleError(error)
+        }
+    }
+
+    func clearAuthError() {
+        authErrorMessage = nil
     }
 
     /// Opens an ASWebAuthenticationSession for the given OAuth provider.
@@ -110,6 +162,7 @@ final class AuthManager: ObservableObject {
             Task { @MainActor [weak self] in
                 // Always stop the local server after the flow completes.
                 localServer.stop()
+                self?.webAuthSession = nil
 
                 if let error {
                     // User cancellation is not a real error — swallow it silently.
@@ -118,18 +171,23 @@ final class AuthManager: ObservableObject {
                         print("ℹ️ AuthManager: OAuth cancelled by user")
                     } else {
                         print("❌ AuthManager: OAuth error - \(error.localizedDescription)")
+                        self?.authErrorMessage = "Google sign-in failed. \(error.localizedDescription)"
                     }
+                    self?.isSigningIn = false
                     return
                 }
 
                 guard let callbackURL else {
                     print("❌ AuthManager: No callback URL received")
+                    self?.isSigningIn = false
+                    self?.authErrorMessage = "Google sign-in did not return a response. Please try again."
                     return
                 }
 
                 guard let self else { return }
                 self.parseTokensFromFragment(url: callbackURL)
                 await self.fetchUser()
+                self.isSigningIn = false
             }
         }
 
@@ -141,7 +199,169 @@ final class AuthManager: ObservableObject {
 
         session.presentationContextProvider = presentationContextProvider
         session.prefersEphemeralWebBrowserSession = false
-        session.start()
+        webAuthSession = session
+        if !session.start() {
+            webAuthSession = nil
+            localAuthServer.stop()
+            isSigningIn = false
+            authErrorMessage = "The sign-in window could not be opened. Please try again."
+        }
+    }
+
+    // MARK: - Native Sign in with Apple
+
+    private func exchangeAppleIdentityToken(
+        _ identityToken: String,
+        nonce: String,
+        fullName: PersonNameComponents?
+    ) async {
+        defer { isSigningIn = false }
+
+        var components = URLComponents(
+            url: supabaseURL.appendingPathComponent("auth/v1/token"),
+            resolvingAgainstBaseURL: true
+        )!
+        components.queryItems = [URLQueryItem(name: "grant_type", value: "id_token")]
+
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "POST"
+        request.setValue(anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(anonKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "provider": "apple",
+            "id_token": identityToken,
+            "nonce": nonce
+        ])
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode) else {
+                let message = Self.authErrorMessage(from: data)
+                authErrorMessage = Self.friendlyServerAuthError(message)
+                return
+            }
+
+            guard let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let newAccessToken = payload["access_token"] as? String,
+                  let newRefreshToken = payload["refresh_token"] as? String else {
+                authErrorMessage = "Supabase returned an invalid Apple sign-in session. Please try again."
+                return
+            }
+
+            accessToken = newAccessToken
+            refreshToken = newRefreshToken
+            persistSession()
+
+            if let fullName, let name = Self.formattedName(fullName) {
+                await updateUserName(name, components: fullName)
+            }
+            await fetchUser()
+        } catch {
+            authErrorMessage = "Apple sign-in could not reach the server. \(error.localizedDescription)"
+        }
+    }
+
+    /// Apple only supplies the person's name on the first authorization, so save it immediately.
+    private func updateUserName(_ fullName: String, components: PersonNameComponents) async {
+        guard let accessToken else { return }
+
+        var metadata: [String: String] = ["full_name": fullName]
+        if let givenName = components.givenName { metadata["given_name"] = givenName }
+        if let familyName = components.familyName { metadata["family_name"] = familyName }
+
+        var request = URLRequest(url: supabaseURL.appendingPathComponent("auth/v1/user"))
+        request.httpMethod = "PUT"
+        request.setValue(anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["data": metadata])
+        _ = try? await URLSession.shared.data(for: request)
+    }
+
+    private static func formattedName(_ components: PersonNameComponents) -> String? {
+        let name = PersonNameComponentsFormatter.localizedString(
+            from: components,
+            style: .default,
+            options: []
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
+    }
+
+    private static func randomNonce(length: Int = 32) -> String {
+        let characters = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._")
+        var result = ""
+        result.reserveCapacity(length)
+
+        while result.count < length {
+            var random: UInt8 = 0
+            guard SecRandomCopyBytes(kSecRandomDefault, 1, &random) == errSecSuccess else {
+                return UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            }
+            if random < characters.count {
+                result.append(characters[Int(random)])
+            }
+        }
+        return result
+    }
+
+    private static func sha256(_ input: String) -> String {
+        SHA256.hash(data: Data(input.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func authErrorMessage(from data: Data) -> String? {
+        guard let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return (payload["msg"] as? String)
+            ?? (payload["message"] as? String)
+            ?? (payload["error_description"] as? String)
+            ?? (payload["error"] as? String)
+    }
+
+    private static func friendlyAppleError(_ error: Error) -> String {
+        let nsError = error as NSError
+        guard nsError.domain == ASAuthorizationError.errorDomain else {
+            return "Apple sign-in could not start. Please try again."
+        }
+
+        guard let code = ASAuthorizationError.Code(rawValue: nsError.code) else {
+            return "Apple sign-in could not be completed. Please try again."
+        }
+
+        switch code {
+        case .unknown:
+            return "Apple sign-in is unavailable in this copy of PodTrackio. Reopen the signed app and try again."
+        case .failed:
+            return "Apple could not complete sign-in. Check your Apple Account in System Settings and try again."
+        case .invalidResponse:
+            return "Apple returned an invalid sign-in response. Please try again."
+        case .notHandled:
+            return "Apple sign-in was not completed. Please try again."
+        case .notInteractive:
+            return "Apple sign-in needs your confirmation. Please try again while PodTrackio is active."
+        case .matchedExcludedCredential:
+            return "This Apple Account credential cannot be used for PodTrackio."
+        case .credentialImport:
+            return "Apple could not import this credential. Please sign in normally instead."
+        case .canceled:
+            return ""
+        default:
+            return "Apple sign-in could not be completed. Please try again."
+        }
+    }
+
+    private static func friendlyServerAuthError(_ message: String?) -> String {
+        guard let message else {
+            return "Apple sign-in is temporarily unavailable. Please try again shortly."
+        }
+
+        if message.localizedCaseInsensitiveContains("provider") &&
+            message.localizedCaseInsensitiveContains("not enabled") {
+            return "Sign in with Apple is temporarily unavailable. Please try again shortly."
+        }
+        return message
     }
 
     // MARK: - Handle Deep-Link Callback
@@ -285,6 +505,7 @@ final class AuthManager: ObservableObject {
             }
 
             self.isAuthenticated = true
+            self.authErrorMessage = nil
             persistSession()
         } catch {
             print("❌ AuthManager: fetchUser error - \(error.localizedDescription)")
@@ -305,6 +526,9 @@ final class AuthManager: ObservableObject {
         avatarURL = nil
         accessToken = nil
         refreshToken = nil
+        authErrorMessage = nil
+        isSigningIn = false
+        appleRawNonce = nil
 
         // Clear persisted session
         let defaults = UserDefaults.standard

@@ -10,6 +10,8 @@
 	<string>PodTrackio</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
+	<key>CFBundleExecutable</key>
+	<string>PodTrackio</string>
 	<key>CFBundleShortVersionString</key>
 	<string>1.0.0</string>
 	<key>CFBundleVersion</key>
@@ -19,9 +21,9 @@
 	<key>LSMinimumSystemVersion</key>
 	<string>26.0</string>
 	<key>CFBundleIconFile</key>
-	<string>PodTrackio</string>
+	<string>AppIcon</string>
 	<key>CFBundleIconName</key>
-	<string>PodTrackio</string>
+	<string>AppIcon</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

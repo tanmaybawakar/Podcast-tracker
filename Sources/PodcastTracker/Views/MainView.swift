@@ -5,6 +5,18 @@ struct MainView: View {
     @EnvironmentObject private var authManager: AuthManager
 
     var body: some View {
+        Group {
+            if authManager.isAuthenticated {
+                authenticatedContent
+            } else {
+                LoginView()
+            }
+        }
+        .onOpenURL { authManager.handleCallback(url: $0) }
+        .applyingAppTheme()
+    }
+
+    private var authenticatedContent: some View {
         NavigationSplitView {
             List(AppSection.allCases, selection: $viewModel.selectedSection) { section in
                 Label(section.rawValue, systemImage: section.icon).tag(section)
@@ -60,13 +72,8 @@ struct MainView: View {
         .searchable(text: $viewModel.searchText, placement: .toolbar, prompt: "Search episodes and categories")
         .sheet(isPresented: $viewModel.showAddPodcast) { AddPodcastSheet() }
         .sheet(isPresented: $viewModel.showRescueSheet) { DistractionRescueSheet() }
-        .onOpenURL { authManager.handleCallback(url: $0) }
-        .overlay {
-            if !authManager.isAuthenticated { LoginView() }
-        }
         .overlay(alignment: .top) { toastLayer }
         .onChange(of: viewModel.selectedSection) { _, _ in viewModel.selectedPodcast = nil }
-        .applyingAppTheme()
     }
 
     @ViewBuilder private var toastLayer: some View {

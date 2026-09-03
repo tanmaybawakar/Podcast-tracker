@@ -3,17 +3,18 @@ set -euo pipefail
 
 MODE="${1:-run}"
 APP_NAME="PodTrackio"
-EXECUTABLE_NAME="PodcastTracker"
+APP_EXECUTABLE_NAME="PodTrackio"
 BUNDLE_ID="com.tangenix.podtrackio"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRATCH_DIR="$ROOT_DIR/.swift-build"
+DERIVED_DATA_DIR="$SCRATCH_DIR/xcode-derived-data"
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
 APP_RESOURCES="$APP_CONTENTS/Resources"
-APP_BINARY="$APP_MACOS/$EXECUTABLE_NAME"
+APP_BINARY="$APP_MACOS/$APP_EXECUTABLE_NAME"
 DMG_PATH="$ROOT_DIR/$APP_NAME.dmg"
 DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode-beta.app/Contents/Developer}"
 export DEVELOPER_DIR
@@ -21,23 +22,17 @@ export CLANG_MODULE_CACHE_PATH="$SCRATCH_DIR/clang-module-cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$SCRATCH_DIR/swiftpm-module-cache"
 
 build_app() {
-  mkdir -p "$CLANG_MODULE_CACHE_PATH" "$SWIFTPM_MODULECACHE_OVERRIDE"
-  swift build --disable-sandbox -Xswiftc -disable-sandbox --scratch-path "$SCRATCH_DIR"
-  local build_dir
-  build_dir="$(swift build --show-bin-path --scratch-path "$SCRATCH_DIR")"
+  mkdir -p "$CLANG_MODULE_CACHE_PATH" "$SWIFTPM_MODULECACHE_OVERRIDE" "$DIST_DIR"
+  xcodebuild \
+    -project "$ROOT_DIR/PodTrackio.xcodeproj" \
+    -scheme PodTrackio \
+    -configuration Debug \
+    -derivedDataPath "$DERIVED_DATA_DIR" \
+    -allowProvisioningUpdates \
+    build >/dev/null
 
   rm -rf "$APP_BUNDLE"
-  mkdir -p "$APP_MACOS" "$APP_RESOURCES"
-  cp "$build_dir/$EXECUTABLE_NAME" "$APP_BINARY"
-  chmod +x "$APP_BINARY"
-  cp "$ROOT_DIR/Info.plist" "$APP_CONTENTS/Info.plist"
-  /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable string $EXECUTABLE_NAME" "$APP_CONTENTS/Info.plist" 2>/dev/null || \
-    /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $EXECUTABLE_NAME" "$APP_CONTENTS/Info.plist"
-  /usr/libexec/PlistBuddy -c "Add :NSPrincipalClass string NSApplication" "$APP_CONTENTS/Info.plist" 2>/dev/null || true
-  ditto "$build_dir/PodcastTracker_PodcastTracker.bundle" "$APP_RESOURCES/PodcastTracker_PodcastTracker.bundle"
-  ditto "$build_dir/YouTubeKit_YouTubeKit.bundle" "$APP_RESOURCES/YouTubeKit_YouTubeKit.bundle"
-  ditto "$ROOT_DIR/PodTrackio.icon" "$APP_RESOURCES/PodTrackio.icon"
-  codesign --force --deep --sign - "$APP_BUNDLE" >/dev/null
+  ditto "$DERIVED_DATA_DIR/Build/Products/Debug/$APP_NAME.app" "$APP_BUNDLE"
 }
 
 create_dmg() {
@@ -52,7 +47,7 @@ create_dmg() {
 }
 
 stop_app() {
-  pkill -x "$EXECUTABLE_NAME" >/dev/null 2>&1 || true
+  pkill -x "$APP_EXECUTABLE_NAME" >/dev/null 2>&1 || true
 }
 
 open_app() {
@@ -71,7 +66,7 @@ case "$MODE" in
     ;;
   --logs|logs)
     open_app
-    /usr/bin/log stream --info --style compact --predicate "process == \"$EXECUTABLE_NAME\""
+    /usr/bin/log stream --info --style compact --predicate "process == \"$APP_EXECUTABLE_NAME\""
     ;;
   --telemetry|telemetry)
     open_app
@@ -80,9 +75,10 @@ case "$MODE" in
   --verify|verify)
     plutil -lint "$APP_CONTENTS/Info.plist"
     codesign --verify --deep --strict "$APP_BUNDLE"
+    codesign -d --entitlements - "$APP_BUNDLE" 2>&1 | grep -q "com.apple.developer.applesignin"
     open_app
     sleep 2
-    pgrep -x "$EXECUTABLE_NAME" >/dev/null
+    pgrep -x "$APP_EXECUTABLE_NAME" >/dev/null
     echo "$APP_BUNDLE launched successfully"
     ;;
   --dmg|dmg)

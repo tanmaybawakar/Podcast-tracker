@@ -18,6 +18,10 @@ final class DataManager: @unchecked Sendable {
     private let downloadRecordsFileName = "download_records.json"
     private let downloadSettingsFileName = "download_settings.json"
 
+    /// A decoding failure must never be treated as an intentionally empty
+    /// library. Keep the original file intact so it can be recovered.
+    private var hasUnreadablePodcastLibrary = false
+
     private var appSupportURL: URL {
         let urls = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)
         let appSupport = urls[0].appendingPathComponent("PodcastTracker", isDirectory: true)
@@ -79,6 +83,10 @@ final class DataManager: @unchecked Sendable {
     // MARK: - Podcasts
 
     func savePodcasts(_ podcasts: [Podcast]) {
+        guard !hasUnreadablePodcastLibrary else {
+            print("⚠️ Kept unreadable podcasts.json in place; refusing to overwrite the library")
+            return
+        }
         do {
             let data = try encoder.encode(podcasts)
             try data.write(to: podcastsURL, options: .atomic)
@@ -88,11 +96,17 @@ final class DataManager: @unchecked Sendable {
     }
 
     func loadPodcasts() -> [Podcast] {
-        guard fileManager.fileExists(atPath: podcastsURL.path) else { return [] }
+        guard fileManager.fileExists(atPath: podcastsURL.path) else {
+            hasUnreadablePodcastLibrary = false
+            return []
+        }
         do {
             let data = try Data(contentsOf: podcastsURL)
-            return try decoder.decode([Podcast].self, from: data)
+            let podcasts = try decoder.decode([Podcast].self, from: data)
+            hasUnreadablePodcastLibrary = false
+            return podcasts
         } catch {
+            hasUnreadablePodcastLibrary = true
             print("❌ Failed to load podcasts: \(error)")
             return []
         }
